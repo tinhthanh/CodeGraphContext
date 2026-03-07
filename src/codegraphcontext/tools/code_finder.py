@@ -521,9 +521,12 @@ class CodeFinder:
             result = session.run("""
                 MATCH (func:Function)
                 WHERE func.is_dependency = false
-                  AND NOT func.name IN ['main', '__init__', '__main__', 'setup', 'run', '__new__', '__del__']
+                  AND NOT func.name IN ['main', 'setup', 'run']
+                  AND NOT (func.name STARTS WITH '__' AND func.name ENDS WITH '__')
                   AND NOT func.name STARTS WITH '_test'
                   AND NOT func.name STARTS WITH 'test_'
+                  AND NOT func.name CONTAINS 'main'
+                  AND NOT func.name =~ '(?i).*(application|entry|entrypoint).*'
                   AND ALL(decorator_name IN $exclude_decorated_with WHERE NOT decorator_name IN func.decorators)
                 WITH func
                 OPTIONAL MATCH (caller:Function)-[:CALLS]->(func)
