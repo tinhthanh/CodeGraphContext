@@ -204,7 +204,10 @@ const HeroSection = () => {
               Version {version} • MIT License
             </Badge>
 
-            <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold mb-6 bg-gradient-to-r from-white via-white to-purple-400 bg-clip-text text-transparent leading-tight tracking-tight">
+            <h1
+              className="text-3xl xs:text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold mb-6 bg-gradient-to-r from-white via-white to-purple-400 bg-clip-text text-transparent leading-tight tracking-tight break-words whitespace-normal max-w-full overflow-x-hidden"
+              style={{ wordBreak: 'break-word' }}
+            >
               CodeGraphContext
             </h1>
 
