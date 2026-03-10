@@ -125,7 +125,14 @@ def get_database_manager() -> Union['DatabaseManager', 'FalkorDBManager', 'Falko
         else:
             raise ValueError(f"Unknown database type: '{db_type}'. Use 'kuzudb', 'falkordb', 'falkordb-remote', or 'neo4j'.")
 
-    # 4. Implicit Default -> FalkorDB Lite (Unix Zero Config)
+    # 4. Auto-detect: Remote FalkorDB (if FALKORDB_HOST is set)
+    # This takes priority over zero-config local backends because it's an explicit signal
+    if _is_falkordb_remote_configured():
+        from .database_falkordb_remote import FalkorDBRemoteManager
+        info_logger("Using remote FalkorDB (auto-detected via FALKORDB_HOST)")
+        return FalkorDBRemoteManager()
+
+    # 5. Implicit Default -> FalkorDB Lite (Unix Zero Config)
     if _is_falkordb_available():
         from .database_falkordb import FalkorDBManager, FalkorDBUnavailableError
         try:
@@ -139,17 +146,11 @@ def get_database_manager() -> Union['DatabaseManager', 'FalkorDBManager', 'Falko
             )
             # fall through to KùzuDB below
 
-    # 5. Implicit Default -> KùzuDB (Best Zero Config)
+    # 6. Implicit Default -> KùzuDB (Best Zero Config)
     if _is_kuzudb_available():
         from .database_kuzu import KuzuDBManager
         info_logger("Using KùzuDB (default)")
         return KuzuDBManager()
-
-    # 6. Auto-detect: Remote FalkorDB (if FALKORDB_HOST is set)
-    if _is_falkordb_remote_configured():
-        from .database_falkordb_remote import FalkorDBRemoteManager
-        info_logger("Using remote FalkorDB (auto-detected via FALKORDB_HOST)")
-        return FalkorDBRemoteManager()
 
     # 7. Fallback if configured
     if _is_neo4j_configured():
