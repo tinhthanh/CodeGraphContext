@@ -182,26 +182,38 @@ add_binary('tree_sitter_yaml', ext)
 add_binary('tree_sitter_embedded_template', ext)
 add_binary('tree_sitter_c_sharp', ext)
 
-# KùzuDB native extension
-add_binary('kuzu', ext)
-
+# KùzuDB complete collection
+try:
+    k_datas, k_binaries, k_hiddenimports = collect_all('kuzu')
+    datas += k_datas
+    binaries += k_binaries
+    hidden_imports += k_hiddenimports
+except Exception as e:
+    print(f"Warning: collect_all failed for kuzu: {e}")
 # ── 2. Bundle Logic (Aggressive FalkorDB Collection) ──────────────────────────
 
 # Native dependencies detection
-def find_all_so_files():
-    """Scans all search paths for falkordb.so to ensure it's never missed."""
+def find_all_native_binaries():
+    """Scans all search paths for falkordb.so and redis-server to ensure they are tracked."""
     found = []
     for path in search_paths:
         if path.exists():
+            # Find falkordb.so
             for f in path.rglob('falkordb.so'):
                 if f.is_file():
-                    # We put them in the root of the bundle for easiest discovery
                     print(f"Bundling found native module: {f}")
-                    found.append((str(f), '.')) 
+                    found.append((str(f), '.'))
+            
+            # Find redislite's redis-server to ensure libcrypto/libssl dependencies are analyzed
+            for f in path.rglob('redis-server'):
+                if f.is_file() and 'redislite' in str(f):
+                    print(f"Bundling redislite native server: {f}")
+                    # Keep its original folder structure inside redislite/bin
+                    found.append((str(f), 'redislite/bin'))
     return found
 
-# Add every falkordb.so found to binaries
-binaries.extend(find_all_so_files())
+# Add native binaries
+binaries.extend(find_all_native_binaries())
 
 # Tricky packages collection (redislite, falkordb, falkordblite)
 if not is_win:
