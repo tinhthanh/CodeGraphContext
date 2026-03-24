@@ -301,7 +301,7 @@ cgc watch .
 cgc help
 ```
 
-**See the full [CLI Commands Guide](CLI_Commands.md) for all available commands and usage scenarios.**
+  **See the full [CLI Commands Guide](docs/CLI_COMPLETE_REFERENCE.md) for all available commands and usage scenarios.**
 
 ### 🎨 Premium Interactive Visualization
 CodeGraphContext can generate stunning, interactive knowledge graphs of your code. Unlike static diagrams, these are premium web-based explorers:
