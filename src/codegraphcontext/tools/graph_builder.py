@@ -1309,7 +1309,8 @@ class GraphBuilder:
                 processed += 1
                 if job_id:
                     self.job_manager.update_job(job_id, processed_files=processed)
-                await asyncio.sleep(0.01)
+                if processed % 50 == 0:
+                    await asyncio.sleep(0)
 
             # Step 6: Create INHERITS relationships (Supplemented from Tree-sitter)
             self._create_all_inheritance_links(list(files_data.values()), imports_map)
