@@ -1055,6 +1055,28 @@ class GraphBuilder:
             info_logger(f"Deleted repository and its contents from graph: {repo_path_str}")
             return True
 
+    def delete_relationship_links(self, repo_path: Path):
+        """Delete all CALLS and INHERITS relationships for a repo before re-linking.
+        
+        Called by the watcher before _create_all_function_calls/_create_all_inheritance_links
+        to prevent duplicate relationship accumulation on incremental updates.
+        """
+        repo_path_str = str(repo_path.resolve()) + "/"
+        with self.driver.session() as session:
+            result = session.run(
+                "MATCH (a)-[r:CALLS]->(b) WHERE a.path STARTS WITH $prefix DELETE r RETURN count(r) AS cnt",
+                prefix=repo_path_str
+            ).single()
+            calls_deleted = result["cnt"] if result else 0
+
+            result = session.run(
+                "MATCH (a)-[r:INHERITS]->(b) WHERE a.path STARTS WITH $prefix DELETE r RETURN count(r) AS cnt",
+                prefix=repo_path_str
+            ).single()
+            inherits_deleted = result["cnt"] if result else 0
+
+        info_logger(f"[RELINK] Cleared {calls_deleted} CALLS and {inherits_deleted} INHERITS before re-linking: {repo_path}")
+
     def update_file_in_graph(self, path: Path, repo_path: Path, imports_map: dict):
         """Updates a single file's nodes in the graph."""
         file_path_str = str(path.resolve())

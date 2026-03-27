@@ -114,7 +114,12 @@ class RepositoryEventHandler(FileSystemEventHandler):
                 self.all_file_data.append(parsed_data)
         info_logger("Refreshed in-memory cache of all file data.")
 
-        # 5. CRITICAL: Re-link the entire graph using the fully updated cache and imports map.
+        # 5. CRITICAL: Delete existing CALLS/INHERITS before re-creating to prevent duplicates.
+        # _create_all_function_calls uses CREATE (not MERGE), so without this cleanup
+        # every file change event would multiply relationship counts.
+        self.graph_builder.delete_relationship_links(self.repo_path)
+
+        # Re-link the entire graph using the fully updated cache and imports map.
         info_logger("Re-linking the entire graph for calls and inheritance...")
         self.graph_builder._create_all_function_calls(self.all_file_data, self.imports_map)
         self.graph_builder._create_all_inheritance_links(self.all_file_data, self.imports_map)
