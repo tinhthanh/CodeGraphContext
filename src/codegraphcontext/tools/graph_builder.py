@@ -703,8 +703,7 @@ class GraphBuilder:
                     'args': call.get('args', []),
                     'full_call_name': call.get('full_name', called_name)
                 }
-                
-                # Try Function caller -> Function callee
+                 # Try Function caller -> Function callee
                 if not self._safe_run_create(session, """
                     OPTIONAL MATCH (caller:Function {name: $caller_name, path: $caller_file_path})
                     OPTIONAL MATCH (called:Function {name: $called_name, path: $called_file_path})
@@ -713,51 +712,73 @@ class GraphBuilder:
                     MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
                     RETURN count(*) as created
                 """, call_params):
-                
-                    # Try Function caller -> Class callee (with __init__ resolution)
+
+                    # Try Function caller -> Class.__init__ / constructor
                     if not self._safe_run_create(session, """
                         OPTIONAL MATCH (caller:Function {name: $caller_name, path: $caller_file_path})
                         OPTIONAL MATCH (called:Class {name: $called_name, path: $called_file_path})
                         OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
                         WHERE init.name IN ["__init__", "constructor"]
-                        WITH caller, COALESCE(init, called) as final_target
-                        WHERE caller IS NOT NULL AND final_target IS NOT NULL
-                        MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(final_target)
+                        WITH caller, init
+                        WHERE caller IS NOT NULL AND init IS NOT NULL
+                        MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(init)
                         RETURN count(*) as created
                     """, call_params):
-                
-                        # Try Class caller -> Function callee
+                        # No __init__ found - link directly to the Class node
+                        self._safe_run_create(session, """
+                            OPTIONAL MATCH (caller:Function {name: $caller_name, path: $caller_file_path})
+                            OPTIONAL MATCH (called:Class {name: $called_name, path: $called_file_path})
+                            WITH caller, called
+                            WHERE caller IS NOT NULL AND called IS NOT NULL
+                            MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
+                            RETURN count(*) as created
+                        """, call_params)
+
+                # Try Class caller -> Function callee
+                if not self._safe_run_create(session, """
+                    OPTIONAL MATCH (caller:Class {name: $caller_name, path: $caller_file_path})
+                    OPTIONAL MATCH (called:Function {name: $called_name, path: $called_file_path})
+                    WITH caller, called
+                    WHERE caller IS NOT NULL AND called IS NOT NULL
+                    MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
+                    RETURN count(*) as created
+                """, call_params):
+
+                    # Try Class caller -> Class.__init__ / constructor
+                    if not self._safe_run_create(session, """
+                        OPTIONAL MATCH (caller:Class {name: $caller_name, path: $caller_file_path})
+                        OPTIONAL MATCH (called:Class {name: $called_name, path: $called_file_path})
+                        OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
+                        WHERE init.name IN ["__init__", "constructor"]
+                        WITH caller, init
+                        WHERE caller IS NOT NULL AND init IS NOT NULL
+                        MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(init)
+                        RETURN count(*) as created
+                    """, call_params):
+                        # No __init__ - link directly to the Class node
                         if not self._safe_run_create(session, """
                             OPTIONAL MATCH (caller:Class {name: $caller_name, path: $caller_file_path})
-                            OPTIONAL MATCH (called:Function {name: $called_name, path: $called_file_path})
+                            OPTIONAL MATCH (called:Class {name: $called_name, path: $called_file_path})
                             WITH caller, called
                             WHERE caller IS NOT NULL AND called IS NOT NULL
                             MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
                             RETURN count(*) as created
                         """, call_params):
-                
-                            # Try Class caller -> Class callee
+                            # Fallback: Relaxed Global Search (Function caller -> any Function callee)
                             if not self._safe_run_create(session, """
-                                OPTIONAL MATCH (caller:Class {name: $caller_name, path: $caller_file_path})
-                                OPTIONAL MATCH (called:Class {name: $called_name, path: $called_file_path})
-                                OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
-                                WHERE init.name IN ["__init__", "constructor"]
-                                WITH caller, COALESCE(init, called) as final_target
-                                WHERE caller IS NOT NULL AND final_target IS NOT NULL
-                                MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(final_target)
-                                RETURN count(*) as created
+                                OPTIONAL MATCH (caller:Function {name: $caller_name, path: $caller_file_path})
+                                OPTIONAL MATCH (called:Function {name: $called_name})
+                                WITH caller, called
+                                WHERE caller IS NOT NULL AND called IS NOT NULL
+                                MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
                             """, call_params):
-
-                                 # Fallback: Relaxed Global Search (Caller: Function/Class -> Callee: Function)
-                                 # Used when path resolution failed or was ambiguous
-                                 self._safe_run_create(session, """
-                                    OPTIONAL MATCH (caller:Function {name: $caller_name, path: $caller_file_path}) 
-                                    OPTIONAL MATCH (callerClass:Class {name: $caller_name, path: $caller_file_path})
-                                    WITH COALESCE(caller, callerClass) as final_caller
+                                # Fallback: Class caller -> any Function callee
+                                self._safe_run_create(session, """
+                                    OPTIONAL MATCH (caller:Class {name: $caller_name, path: $caller_file_path})
                                     OPTIONAL MATCH (called:Function {name: $called_name})
-                                    WITH final_caller, called
-                                    WHERE final_caller IS NOT NULL AND called IS NOT NULL
-                                    MERGE (final_caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
+                                    WITH caller, called
+                                    WHERE caller IS NOT NULL AND called IS NOT NULL
+                                    MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
                                 """, call_params)
             else:
                 # File-level calls: Try Function first, then Class
@@ -769,7 +790,7 @@ class GraphBuilder:
                     'args': call.get('args', []),
                     'full_call_name': call.get('full_name', called_name)
                 }
-                
+
                 if not self._safe_run_create(session, """
                     OPTIONAL MATCH (caller:File {path: $caller_file_path})
                     OPTIONAL MATCH (called:Function {name: $called_name, path: $called_file_path})
@@ -778,26 +799,35 @@ class GraphBuilder:
                     MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
                     RETURN count(*) as created
                 """, call_params):
-                
+
+                    # Try File caller -> Class.__init__ / constructor
                     if not self._safe_run_create(session, """
                         OPTIONAL MATCH (caller:File {path: $caller_file_path})
                         OPTIONAL MATCH (called:Class {name: $called_name, path: $called_file_path})
                         OPTIONAL MATCH (called)-[:CONTAINS]->(init:Function)
                         WHERE init.name IN ["__init__", "constructor"]
-                        WITH caller, COALESCE(init, called) as final_target
-                        WHERE caller IS NOT NULL AND final_target IS NOT NULL
-                        MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(final_target)
+                        WITH caller, init
+                        WHERE caller IS NOT NULL AND init IS NOT NULL
+                        MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(init)
                         RETURN count(*) as created
                     """, call_params):
-
-                         # Fallback: Relaxed Global Search (Caller: File -> Callee: Function)
-                         self._safe_run_create(session, """
+                        # No __init__ - link directly to the Class node
+                        if not self._safe_run_create(session, """
                             OPTIONAL MATCH (caller:File {path: $caller_file_path})
-                            OPTIONAL MATCH (called:Function {name: $called_name})
+                            OPTIONAL MATCH (called:Class {name: $called_name, path: $called_file_path})
                             WITH caller, called
                             WHERE caller IS NOT NULL AND called IS NOT NULL
                             MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
-                        """, call_params)
+                            RETURN count(*) as created
+                        """, call_params):
+                            # Fallback: Relaxed Global Search (File -> any Function)
+                            self._safe_run_create(session, """
+                                OPTIONAL MATCH (caller:File {path: $caller_file_path})
+                                OPTIONAL MATCH (called:Function {name: $called_name})
+                                WITH caller, called
+                                WHERE caller IS NOT NULL AND called IS NOT NULL
+                                MERGE (caller)-[:CALLS {line_number: $line_number, args: $args, full_call_name: $full_call_name}]->(called)
+                            """, call_params)
 
     def _create_all_function_calls(self, all_file_data: list[Dict], imports_map: dict):
         """Create CALLS relationships for all functions after all files have been processed."""
@@ -1278,20 +1308,22 @@ class GraphBuilder:
 
             # Search for .cgcignore upwards
             cgcignore_path = None
-            ignore_root = path.resolve()
-            
+            # ignore_root is always the indexed path itself so that file paths
+            # are matched relative to the project being indexed.  A parent
+            # .cgcignore is still loaded (for monorepo support), but anchoring
+            # to its directory would make patterns like "website/" incorrectly
+            # filter out every file when indexing the website sub-directory.
+            ignore_root = path.resolve() if path.is_dir() else path.resolve().parent
+
             # Start search from path (or parent if path is file)
-            curr = path.resolve()
-            if not curr.is_dir():
-                curr = curr.parent
+            curr = ignore_root
 
             # Walk up looking for .cgcignore
             while True:
                 candidate = curr / ".cgcignore"
                 if candidate.exists():
                     cgcignore_path = candidate
-                    ignore_root = curr
-                    debug_log(f"Found .cgcignore at {ignore_root}")
+                    debug_log(f"Found .cgcignore at {curr} (filtering relative to {ignore_root})")
                     break
                 if curr.parent == curr: # Root hit
                     break

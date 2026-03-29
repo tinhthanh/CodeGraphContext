@@ -40,11 +40,32 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
         if element is None: return None
         if isinstance(element, (int, str)):
             return str(element)
-        # Try various ways to get ID (Neo4j, FalkorDB, etc.)
+        
+        # If element is a dict (like Neo4j returned items or KuzuDB node/rel dicts)
+        if isinstance(element, dict):
+            # KuzuDB _src / _dst are directly {'offset': X, 'table': Y}
+            if 'offset' in element and 'table' in element:
+                return f"{element.get('table')}_{element.get('offset')}"
+                
+            for key in ['_id', 'id', 'element_id']:
+                if key in element:
+                    val = element[key]
+                    if val is not None:
+                        # KuzuDB returns dict IDs like {'offset': 1, 'table': 0} inside nodes
+                        if isinstance(val, dict):
+                            return f"{val.get('table', 0)}_{val.get('offset', 0)}"
+                        return str(val)
+            return str(id(element))
+            
+        # Try various ways to get ID (Neo4j, FalkorDB, etc. objects)
         for attr in ['element_id', 'id', '_id']:
             if hasattr(element, attr):
                 val = getattr(element, attr)
-                if val is not None: return str(val)
+                if val is not None: 
+                    # KuzuDB objects if any
+                    if isinstance(val, dict):
+                        return f"{val.get('table', 0)}_{val.get('offset', 0)}"
+                    return str(val)
         return str(id(element))
 
     try:
@@ -52,8 +73,6 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
         edges = []
 
         print(f"DEBUG: Starting get_graph with repo_path={repo_path}", flush=True)
-        nodes_dict = {}
-        edges = []
 
         with db_manager.get_driver().session() as session:
             if cypher_query:
@@ -88,27 +107,37 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
                             if eid and eid not in nodes_dict:
                                 # Extract labels
                                 labels = []
-                                for label_attr in ['_labels', 'labels']:
-                                    if hasattr(node, label_attr):
-                                        attr_val = getattr(node, label_attr)
-                                        if attr_val:
-                                            labels = list(attr_val)
-                                            break
+                                if isinstance(node, dict):
+                                    # KuzuDB node label is under '_label'
+                                    if '_label' in node:
+                                        labels = [node['_label']]
+                                    elif 'label' in node:
+                                        labels = [node['label']]
+                                else:
+                                    for label_attr in ['_labels', 'labels']:
+                                        if hasattr(node, label_attr):
+                                            attr_val = getattr(node, label_attr)
+                                            if attr_val:
+                                                labels = list(attr_val)
+                                                break
                                 
                                 # Extract properties
                                 props = {}
-                                for prop_attr in ['properties', '_properties']:
-                                    if hasattr(node, prop_attr):
-                                        attr_val = getattr(node, prop_attr)
-                                        if attr_val:
-                                            props = dict(attr_val)
-                                            break
-                                            
-                                # Fallback if props still empty but node acts like dict
-                                if not props and hasattr(node, 'items'):
-                                    try:
-                                        props = dict(node.items())
-                                    except: pass
+                                if isinstance(node, dict):
+                                    props = {k: v for k, v in node.items() if not k.startswith('_')}
+                                else:
+                                    for prop_attr in ['properties', '_properties']:
+                                        if hasattr(node, prop_attr):
+                                            attr_val = getattr(node, prop_attr)
+                                            if attr_val:
+                                                props = dict(attr_val)
+                                                break
+                                                
+                                    # Fallback if props still empty but node acts like dict
+                                    if not props and hasattr(node, 'items'):
+                                        try:
+                                            props = dict(node.items())
+                                        except: pass
                                 
                                 # Extract name/label for frontend
                                 # Prefer 'name' property, fallback to 'label', then 'path' or 'Unknown'
@@ -137,14 +166,16 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
                             else:
                                 print(f"DEBUG rel (obj): type={type(rel).__name__}, attrs={[a for a in dir(rel) if not a.startswith('__')]}", file=sys.stderr, flush=True)
 
-                        # FalkorDB Lite may return rels as dicts OR objects
+                        # FalkorDB / KuzuDB may return rels as dicts OR objects
                         if isinstance(rel, dict):
-                            rid = str(rel.get('id', id(rel)))
-                            src = rel.get('src_node')
-                            dst = rel.get('dest_node')
-                            source = str(src) if src is not None else None
-                            target = str(dst) if dst is not None else None
-                            rel_type = str(rel.get('relation', rel.get('type', 'RELATED'))).upper()
+                            rid = get_eid(rel)
+                            # KuzuDB uses _src and _dst, FalkorDB uses src_node/dest_node
+                            src = rel.get('_src', rel.get('src_node'))
+                            dst = rel.get('_dst', rel.get('dest_node'))
+                            
+                            source = get_eid(src) if src is not None else None
+                            target = get_eid(dst) if dst is not None else None
+                            rel_type = str(rel.get('_label', rel.get('relation', rel.get('type', 'RELATED')))).upper()
                         else:
                             rid = get_eid(rel)
                             start_node = None
