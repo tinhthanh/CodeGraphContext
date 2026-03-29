@@ -69,5 +69,4 @@ cgc_btc/
 # Claude
 .claude/*
 *.spec
-playground
 todo.md

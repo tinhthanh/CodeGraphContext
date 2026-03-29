@@ -96,7 +96,7 @@
 ---
 
 ## 项目详情
-- **版本:** 0.3.1
+- **版本:** 0.3.2
 - **作者:** Shashank Shekhar Singh <shashankshekharsingh1205@gmail.com>
 - **许可证:** MIT License (详见 [LICENSE](LICENSE))
 - **网站:** [CodeGraphContext](http://codegraphcontext.vercel.app/)
