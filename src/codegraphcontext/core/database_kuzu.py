@@ -113,7 +113,11 @@ class KuzuDBManager:
         # use_group=True  -> CREATE REL TABLE GROUP (for multi FROM..TO bindings)
         # use_group=False -> CREATE REL TABLE          (single binding)
         rel_tables = [
-            ("CONTAINS", "FROM File TO Function, FROM File TO Class, FROM File TO Variable, FROM File TO Trait, FROM File TO Interface, FROM Macro TO Macro, FROM File TO Macro, FROM File TO Struct, FROM File TO Enum, FROM File TO Union, FROM File TO Annotation, FROM File TO Record, FROM File TO Property, FROM Repository TO Directory, FROM Directory TO Directory, FROM Directory TO File, FROM Repository TO File, FROM Class TO Function, FROM Function TO Function", True),
+            # Note: in KùzuDB, some labels (e.g. `Macro`, `Property`, `Union`) are treated as reserved
+            # keywords in CREATE REL TABLE statements. We must escape them with backticks
+            # or the rel table creation will fail silently, leading to runtime
+            # "Binder exception: Table CONTAINS does not exist".
+            ("CONTAINS", "FROM File TO Function, FROM File TO Class, FROM File TO Variable, FROM File TO Trait, FROM File TO Interface, FROM `Macro` TO `Macro`, FROM File TO `Macro`, FROM File TO Struct, FROM File TO Enum, FROM File TO `Union`, FROM File TO Annotation, FROM File TO Record, FROM File TO `Property`, FROM Repository TO Directory, FROM Directory TO Directory, FROM Directory TO File, FROM Repository TO File, FROM Class TO Function, FROM Function TO Function", True),
             ("CALLS", "FROM Function TO Function, FROM Function TO Class, FROM File TO Function, FROM File TO Class, FROM Class TO Function, FROM Class TO Class, line_number INT64, args STRING[], full_call_name STRING", True),
             ("IMPORTS", "FROM File TO Module, alias STRING, full_import_name STRING, imported_name STRING, line_number INT64", False),
             ("INHERITS", "FROM Class TO Class, FROM Record TO Record, FROM Interface TO Interface", True),
