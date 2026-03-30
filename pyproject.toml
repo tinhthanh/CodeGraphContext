@@ -30,6 +30,7 @@ dependencies = [
     "nbconvert>=7.16.6",
     "pathspec>=0.12.1",
     "falkordb>=0.1.0",
+    "requests>=2.28.0",
     "falkordblite>=0.1.0; sys_platform != 'win32' and python_version >= '3.12'",
     "fastapi>=0.100.0",
     "uvicorn>=0.22.0"
