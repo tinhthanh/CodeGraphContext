@@ -24,10 +24,28 @@ import zipfile
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime
+from datetime import datetime, date
 import subprocess
 
 from codegraphcontext.utils.debug_log import debug_log, info_logger, error_logger, warning_logger
+
+
+class _BundleEncoder(json.JSONEncoder):
+    """Handles Neo4j DateTime and other non-standard types for bundle serialization."""
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        if hasattr(obj, 'isoformat'):
+            return obj.isoformat()
+        if hasattr(obj, 'iso_format'):
+            return obj.iso_format()
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, set):
+            return list(obj)
+        if isinstance(obj, bytes):
+            return obj.decode('utf-8', errors='replace')
+        return super().default(obj)
 
 
 class CGCBundle:
@@ -91,13 +109,13 @@ class CGCBundle:
                 info_logger("Extracting metadata...")
                 metadata = self._extract_metadata(repo_path)
                 with open(temp_path / "metadata.json", 'w') as f:
-                    json.dump(metadata, f, indent=2)
+                    json.dump(metadata, f, indent=2, cls=_BundleEncoder)
                 
                 # Step 2: Extract schema
                 info_logger("Extracting schema...")
                 schema = self._extract_schema()
                 with open(temp_path / "schema.json", 'w') as f:
-                    json.dump(schema, f, indent=2)
+                    json.dump(schema, f, indent=2, cls=_BundleEncoder)
                 
                 # Step 3: Extract nodes
                 info_logger("Extracting nodes...")
@@ -112,7 +130,7 @@ class CGCBundle:
                     info_logger("Generating statistics...")
                     stats = self._generate_stats(repo_path, node_count, edge_count)
                     with open(temp_path / "stats.json", 'w') as f:
-                        json.dump(stats, f, indent=2)
+                        json.dump(stats, f, indent=2, cls=_BundleEncoder)
                 
                 # Step 6: Create README
                 self._create_readme(temp_path / "README.md", metadata, stats if include_stats else None)
@@ -282,19 +300,19 @@ class CGCBundle:
                         stderr=subprocess.DEVNULL
                     ).decode().strip()
                     metadata["commit"] = commit[:8]
-                    
-                    # Get language statistics
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    pass
+
+                try:
                     result = session.run("""
                         MATCH (f:File)
                         WHERE f.path STARTS WITH $repo_path
                         RETURN f.language as language, count(*) as count
                         ORDER BY count DESC
                     """, repo_path=str(repo_path.resolve()))
-                    
                     languages = {record["language"]: record["count"] for record in result if record["language"]}
                     metadata["languages"] = list(languages.keys())
-                    
-                except (subprocess.CalledProcessError, FileNotFoundError):
+                except Exception:
                     pass
         
         return metadata
@@ -405,7 +423,7 @@ class CGCBundle:
                     elif hasattr(node, 'id'):
                         node_dict['_id'] = str(node.id)
                     
-                    f.write(json.dumps(node_dict) + '\n')
+                    f.write(json.dumps(node_dict, cls=_BundleEncoder) + '\n')
                     count += 1
         
         return count
@@ -475,7 +493,7 @@ class CGCBundle:
                         'properties': rel_props
                     }
                     
-                    f.write(json.dumps(edge_dict) + '\n')
+                    f.write(json.dumps(edge_dict, cls=_BundleEncoder) + '\n')
                     count += 1
         
         return count
@@ -657,9 +675,15 @@ cgc import <bundle-file>.cgc
             info_logger(f"Deleted repository: {repo_identifier}")
     
     def _clear_graph(self):
-        """Clear all nodes and relationships from the graph."""
+        """Clear all nodes and relationships from the graph in batches."""
         with self.db_manager.get_driver().session() as session:
-            session.run("MATCH (n) DETACH DELETE n")
+            while True:
+                result = session.run(
+                    "MATCH (n) WITH n LIMIT 500 DETACH DELETE n RETURN count(n) as deleted"
+                )
+                record = result.single()
+                if not record or record["deleted"] == 0:
+                    break
     
     def _import_schema(self, schema_file: Path):
         """Import schema (constraints and indexes)."""

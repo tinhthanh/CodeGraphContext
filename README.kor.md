@@ -6,6 +6,7 @@
 - 🇬🇧 [English](README.md)
 - 🇨🇳 [中文](README.zh-CN.md)
 - 🇰🇷 [한국어](README.kor.md)
+- 🇺🇦 [Українська](README.uk.md)
 - 🇯🇵 日本語 (준비 중)
 - 🇷🇺 Русский (준비 중)
 - 🇪🇸 Español (준비 중)
