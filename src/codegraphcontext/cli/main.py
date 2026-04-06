@@ -474,7 +474,7 @@ def config_reset():
         console.print("[yellow]Reset cancelled[/yellow]")
 
 @config_app.command("db")
-def config_db(backend: str = typer.Argument(..., help="Database backend: 'neo4j' or 'falkordb'")):
+def config_db(backend: str = typer.Argument(..., help="Database backend: 'neo4j', 'falkordb', 'falkordb-remote', or 'kuzudb'")):
     """
     Quickly switch the default database backend.
     
@@ -483,14 +483,19 @@ def config_db(backend: str = typer.Argument(..., help="Database backend: 'neo4j'
     Examples:
         cgc config db neo4j
         cgc config db falkordb
+        cgc config db kuzudb
     """
     backend = backend.lower()
-    if backend not in ['falkordb', 'falkordb-remote', 'neo4j']:
+    if backend not in ['falkordb', 'falkordb-remote', 'neo4j', 'kuzudb']:
         console.print(f"[bold red]Invalid backend: {backend}[/bold red]")
-        console.print("Must be 'falkordb', 'falkordb-remote', or 'neo4j'")
+        console.print("Must be 'falkordb', 'falkordb-remote', 'neo4j', or 'kuzudb'")
         raise typer.Exit(code=1)
     
-    config_manager.set_config_value("DEFAULT_DATABASE", backend)
+    updated = config_manager.set_config_value("DEFAULT_DATABASE", backend)
+    if not updated:
+        console.print(f"[bold red]Failed to switch default database to {backend}[/bold red]")
+        raise typer.Exit(code=1)
+
     console.print(f"[green]✔ Default database switched to {backend}[/green]")
 
 # ============================================================================
@@ -851,6 +856,15 @@ def doctor():
                     all_checks_passed = False
             else:
                 console.print(f"   [yellow]⚠[/yellow] Neo4j credentials not set. Run 'cgc neo4j setup'")
+        elif default_db == "kuzudb":
+            from importlib.util import find_spec
+
+            if find_spec("kuzu") is not None:
+                console.print(f"   [green]✓[/green] KuzuDB is installed")
+            else:
+                console.print(f"   [red]✗[/red] KuzuDB is not installed")
+                console.print(f"       Run: pip install kuzu")
+                all_checks_passed = False
         else:
             # FalkorDB
             try:
@@ -2313,7 +2327,7 @@ def main(
         None, 
         "--database", 
         "-db", 
-        help="[Global] Temporarily override database backend (falkordb or neo4j) for any command"
+        help="[Global] Temporarily override database backend (falkordb, falkordb-remote, neo4j, or kuzudb) for any command"
     ),
     visual: bool = typer.Option(
         False,
