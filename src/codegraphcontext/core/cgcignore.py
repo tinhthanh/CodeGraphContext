@@ -25,13 +25,31 @@ def find_cgcignore(ignore_root: Path, explicit_path: Optional[str] = None) -> Op
         if candidate.exists():
             return candidate
 
+    # Search parent folders only within the current git worktree. If the
+    # indexed path is outside a git repo (e.g. /tmp test dirs), avoid crawling
+    # up to filesystem-wide locations like /tmp/.cgcignore.
+    git_root: Optional[Path] = None
+    probe = ignore_root
+    while True:
+        if (probe / ".git").exists():
+            git_root = probe
+            break
+        if probe.parent == probe:
+            break
+        probe = probe.parent
+
     curr = ignore_root
     while True:
         candidate = curr / ".cgcignore"
         if candidate.exists():
             return candidate
-        if curr.parent == curr:
+
+        if git_root is None:
             return None
+
+        if curr == git_root:
+            return None
+
         curr = curr.parent
 
 def ensure_default_cgcignore(path: Path, default_patterns: list[str]) -> None:

@@ -63,3 +63,22 @@ def test_read_cgcignore_patterns_merges_defaults_with_user_patterns(tmp_path: Pa
     merged = read_cgcignore_patterns(cgcignore, ["*.png", "*.json"])
 
     assert merged == ["*.png", "*.json", "*.txt", "*.log"]
+
+
+def test_find_cgcignore_does_not_escape_non_git_root(tmp_path: Path):
+    parent = tmp_path / "parent"
+    repo = parent / "repo"
+    parent.mkdir()
+    repo.mkdir()
+
+    # A parent-level .cgcignore should not be applied when indexing a path
+    # outside a git worktree.
+    (parent / ".cgcignore").write_text("*.txt\n", encoding="utf-8")
+
+    default_patterns = ["*.png"]
+    spec, resolved = build_ignore_spec(ignore_root=repo, default_patterns=default_patterns)
+
+    assert resolved == repo / ".cgcignore"
+    assert (repo / ".cgcignore").exists()
+    assert spec.match_file("image.png")
+    assert not spec.match_file("notes.txt")

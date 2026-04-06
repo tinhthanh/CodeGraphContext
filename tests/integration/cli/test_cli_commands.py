@@ -225,8 +225,8 @@ def cli_test_stubs(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main.config_manager, "CONFIG_FILE", tmp_path / "config.json")
 
     monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(cli_main, "configure_mcp_client", lambda: None)
-    monkeypatch.setattr(cli_main, "run_neo4j_setup_wizard", lambda: None)
+    monkeypatch.setattr(cli_main, "configure_mcp_client", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_main, "run_neo4j_setup_wizard", lambda *_args, **_kwargs: None)
 
     monkeypatch.setattr(cli_main, "index_helper", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli_main, "add_package_helper", lambda *_args, **_kwargs: None)
@@ -243,7 +243,7 @@ def cli_test_stubs(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main, "list_watching_helper", lambda *_args, **_kwargs: None)
 
     fake_db = _FakeDBManager()
-    monkeypatch.setattr(cli_main, "_initialize_services", lambda: (fake_db, _FakeGraphBuilder(), _FakeCodeFinder()))
+    monkeypatch.setattr(cli_main, "_initialize_services", lambda *_args, **_kwargs: (fake_db, _FakeGraphBuilder(), _FakeCodeFinder()))
     monkeypatch.setattr(cli_main.DatabaseManager, "test_connection", staticmethod(lambda *_args, **_kwargs: (True, None)))
     monkeypatch.setattr(cli_main.typer, "confirm", lambda *_args, **_kwargs: True)
 
@@ -265,7 +265,7 @@ def cli_test_stubs(monkeypatch, tmp_path):
     downloaded_bundle.write_text("bundle", encoding="utf-8")
 
     registry_module = types.ModuleType("codegraphcontext.cli.registry_commands")
-    registry_module.list_bundles = lambda **_kwargs: None
+    registry_module.list_bundles = lambda *_args, **_kwargs: None
     registry_module.search_bundles = lambda *_args, **_kwargs: None
     registry_module.download_bundle = lambda *_args, **_kwargs: str(downloaded_bundle)
     registry_module.request_bundle = lambda *_args, **_kwargs: None
@@ -432,7 +432,11 @@ def test_find_content_falkordb_known_limitation_message(monkeypatch):
             raise Exception("CALL db.index.fulltext.queryNodes is unsupported")
 
     monkeypatch.setattr(cli_main, "_load_credentials", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(cli_main, "_initialize_services", lambda: (_FakeFalkorDBManager(), _FakeGraphBuilder(), _FailingFinder()))
+    monkeypatch.setattr(
+        cli_main,
+        "_initialize_services",
+        lambda *_args, **_kwargs: (_FakeFalkorDBManager(), _FakeGraphBuilder(), _FailingFinder()),
+    )
 
     result = runner.invoke(app, ["--database", "falkordb", "find", "content", "foo"])
 
@@ -542,7 +546,7 @@ class TestNeo4jDatabaseNameCLI:
 
 def test_load_credentials_displays_kuzudb_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main, "find_dotenv", lambda **_kwargs: None)
-    monkeypatch.setattr(cli_main.config_manager, "ensure_config_dir", lambda: None)
+    monkeypatch.setattr(cli_main.config_manager, "ensure_config_dir", lambda *_args, **_kwargs: None)
 
     monkeypatch.chdir(tmp_path)
     clean_env = {
