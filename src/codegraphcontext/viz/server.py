@@ -216,10 +216,20 @@ async def get_graph(repo_path: Optional[str] = None, cypher_query: Optional[str]
                 file_paths.append(str(n["file"]))
         file_paths = sorted(list(set(file_paths)))
 
+        # Read file contents so the frontend never needs a separate API call
+        file_contents: dict[str, str] = {}
+        for fp in file_paths:
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    file_contents[fp] = f.read()
+            except Exception:
+                pass
+
         response_data = {
             "nodes": list(nodes_dict.values()), 
             "links": edges,
             "files": file_paths,
+            "fileContents": file_contents,
         }
         
         print(f"API SUCCESS: Returning graph with {len(response_data['nodes'])} nodes and {len(response_data['links'])} links.", file=sys.stderr, flush=True)
