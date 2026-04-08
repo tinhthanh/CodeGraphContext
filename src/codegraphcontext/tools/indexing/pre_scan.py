@@ -24,6 +24,8 @@ def _register_prescans() -> Dict[str, _PreScanFn]:
     from ..languages import swift as swift_lang_module
     from ..languages import dart as dart_lang_module
     from ..languages import perl as perl_lang_module
+    from ..languages import php as php_lang_module
+    from ..languages import haskell as haskell_lang_module
     from ..languages import elixir as elixir_lang_module
 
     def make_py(ext: str) -> _PreScanFn:
@@ -64,6 +66,8 @@ def _register_prescans() -> Dict[str, _PreScanFn]:
         ".dart": lambda files, gp: dart_lang_module.pre_scan_dart(files, gp(".dart")),
         ".pl": lambda files, gp: perl_lang_module.pre_scan_perl(files, gp(".pl")),
         ".pm": lambda files, gp: perl_lang_module.pre_scan_perl(files, gp(".pm")),
+        ".php": lambda files, gp: php_lang_module.pre_scan_php(files, gp(".php")),
+        ".hs": lambda files, gp: haskell_lang_module.pre_scan_haskell(files, gp(".hs")),
         ".ex": lambda files, gp: elixir_lang_module.pre_scan_elixir(files, gp(".ex")),
         ".exs": lambda files, gp: elixir_lang_module.pre_scan_elixir(files, gp(".exs")),
     }

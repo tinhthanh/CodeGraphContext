@@ -489,4 +489,31 @@ class PhpTreeSitterParser:
 
 def pre_scan_php(files: list[Path], parser_wrapper) -> dict:
     name_to_files = {}
+    for path in files:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            # Extract class, interface, trait, and function names
+            patterns = [
+                r"(?:class|interface|trait)\s+(\w+)",
+                r"function\s+(\w+)\s*\(",
+            ]
+            for pattern in patterns:
+                for match in re.finditer(pattern, content):
+                    name = match.group(1)
+                    if name not in name_to_files:
+                        name_to_files[name] = []
+                    name_to_files[name].append(str(path))
+            # Extract namespace for FQN mapping
+            ns_match = re.search(r"namespace\s+([\w\\]+)", content)
+            if ns_match:
+                namespace = ns_match.group(1)
+                for pattern in [r"(?:class|interface|trait)\s+(\w+)"]:
+                    for match in re.finditer(pattern, content):
+                        fqn = f"{namespace}\\{match.group(1)}"
+                        if fqn not in name_to_files:
+                            name_to_files[fqn] = []
+                        name_to_files[fqn].append(str(path))
+        except Exception:
+            pass
     return name_to_files

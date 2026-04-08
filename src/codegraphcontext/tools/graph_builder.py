@@ -41,7 +41,7 @@ class GraphBuilder:
             ".cjs": "javascript",
             ".go": "go",
             ".ts": "typescript",
-            ".tsx": "typescript",
+            ".tsx": "tsx",
             ".cpp": "cpp",
             ".h": "cpp",
             ".hpp": "cpp",

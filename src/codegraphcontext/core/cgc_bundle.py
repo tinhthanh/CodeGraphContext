@@ -384,7 +384,7 @@ class CGCBundle:
             if repo_path:
                 query = """
                     MATCH (n)
-                    WHERE n.path STARTS WITH $repo_path OR n.path STARTS WITH $repo_path
+                    WHERE n.path STARTS WITH $repo_path
                     RETURN n, labels(n) as labels
                 """
                 params = {"repo_path": str(repo_path.resolve())}
@@ -437,8 +437,8 @@ class CGCBundle:
             if repo_path:
                 query = """
                     MATCH (n)-[r]->(m)
-                    WHERE (n.path STARTS WITH $repo_path OR n.path STARTS WITH $repo_path)
-                       OR (m.path STARTS WITH $repo_path OR m.path STARTS WITH $repo_path)
+                    WHERE (n.path STARTS WITH $repo_path)
+                       OR (m.path STARTS WITH $repo_path)
                     RETURN n, r, m, type(r) as rel_type
                 """
                 params = {"repo_path": str(repo_path.resolve())}

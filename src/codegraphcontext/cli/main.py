@@ -669,10 +669,12 @@ def bundle_load(
 @app.command("export", rich_help_panel="Bundle Shortcuts")
 def export_shortcut(
     output: str = typer.Argument(..., help="Output path for the .cgc bundle file"),
-    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Specific repository path to export")
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Specific repository path to export"),
+    no_stats: bool = typer.Option(False, "--no-stats", help="Skip generating statistics in the bundle"),
+    context: Optional[str] = typer.Option(None, "--context", "-c", help="Specific context to use"),
 ):
     """Shortcut for 'cgc bundle export'"""
-    bundle_export(output, repo, False)
+    bundle_export(output, repo, no_stats, context)
 
 @app.command("load", rich_help_panel="Bundle Shortcuts")
 def load_shortcut(
@@ -793,6 +795,7 @@ def doctor():
     
     # 1. Check configuration
     console.print("[bold]1. Checking Configuration...[/bold]")
+    config = {}
     try:
         config = config_manager.load_config()
         

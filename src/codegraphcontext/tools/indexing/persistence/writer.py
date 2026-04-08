@@ -420,37 +420,37 @@ class GraphWriter:
             UNWIND $batch AS row
             MATCH (caller:Function {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Function {name: row.called_name, path: row.called_file_path})
-            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
         """
         q_fn_to_cls = """
             UNWIND $batch AS row
             MATCH (caller:Function {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Class {name: row.called_name, path: row.called_file_path})
-            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
         """
         q_cls_to_fn = """
             UNWIND $batch AS row
             MATCH (caller:Class {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Function {name: row.called_name, path: row.called_file_path})
-            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
         """
         q_cls_to_cls = """
             UNWIND $batch AS row
             MATCH (caller:Class {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
             MATCH (called:Class {name: row.called_name, path: row.called_file_path})
-            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
         """
         q_file_to_fn = """
             UNWIND $batch AS row
             MATCH (caller:File {path: row.caller_file_path})
             MATCH (called:Function {name: row.called_name, path: row.called_file_path})
-            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
         """
         q_file_to_cls = """
             UNWIND $batch AS row
             MATCH (caller:File {path: row.caller_file_path})
             MATCH (called:Class {name: row.called_name, path: row.called_file_path})
-            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+            MERGE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
         """
         groups: List[Tuple[str, List[Dict], str]] = [
             ("fn→fn", fn_to_fn, q_fn_to_fn),
@@ -590,8 +590,8 @@ class GraphWriter:
                             callee_line=edge["callee_line"],
                             ref_line=edge["ref_line"],
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        warning_logger(f"Failed to write SCIP call edge: {e}")
 
     def delete_file_from_graph(self, path: str) -> None:
         file_path_str = str(Path(path).resolve())

@@ -38,6 +38,7 @@ LANGUAGE_ALIASES = {
     "python": "python",
     "javascript": "javascript",
     "typescript": "typescript",
+    "tsx": "tsx",
     "cpp": "cpp",
     "c_sharp": "c_sharp",
     "c": "c",

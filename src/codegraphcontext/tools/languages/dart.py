@@ -296,10 +296,20 @@ class DartTreeSitterParser:
                 # Ensure we are at the right node level
                 target_node = node
                 if capture_name == "call":
-                    # For call capture, find the name identifier
-                    # selector -> argument_part -> arguments
-                    # we want the name before this selector
-                    pass 
+                    name_node = None
+                    for child in node.children:
+                        if child.type == 'identifier':
+                            name_node = child
+                            break
+                        if child.type == 'selector':
+                            for sub in child.children:
+                                if sub.type == 'identifier':
+                                    name_node = sub
+                                    break
+                    if name_node:
+                        target_node = name_node
+                    else:
+                        continue
 
                 # Deduplicate by start byte
                 node_id = target_node.start_byte

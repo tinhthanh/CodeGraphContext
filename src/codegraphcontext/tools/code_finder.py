@@ -30,12 +30,12 @@ class CodeFinder:
     def __init__(self, db_manager: DatabaseManager):
         self.db_manager = db_manager
         self.driver = self.db_manager.get_driver()
-        self._is_falkordb = getattr(db_manager, 'get_backend_type', lambda: 'neo4j')() != 'neo4j'
+        self._lacks_native_fulltext = getattr(db_manager, 'get_backend_type', lambda: 'neo4j')() != 'neo4j'
 
     def format_query(self, find_by: Literal["Class", "Function"], fuzzy_search:bool, repo_path: Optional[str] = None) -> str:
         """Format the search query based on the search type and fuzzy search settings."""
         repo_filter = "AND node.path STARTS WITH $repo_path" if repo_path else ""
-        if self._is_falkordb:
+        if self._lacks_native_fulltext:
             # FalkorDB does not support CALL db.idx.fulltext.queryNodes.
             # Fall back to a pure Cypher CONTAINS/toLower match on node name.
             name_filter = "toLower(node.name) CONTAINS toLower($search_term)"
@@ -112,7 +112,7 @@ class CodeFinder:
                 """, name=search_term, repo_path=repo_path)
                 return result.data()
 
-        if self._is_falkordb:
+        if self._lacks_native_fulltext:
             return self._find_by_name_fuzzy_portable(
                 "Function", search_term, edit_distance, repo_path
             )
@@ -145,7 +145,7 @@ class CodeFinder:
                 """, name=search_term, repo_path=repo_path)
                 return result.data()
 
-        if self._is_falkordb:
+        if self._lacks_native_fulltext:
             return self._find_by_name_fuzzy_portable(
                 "Class", search_term, edit_distance, repo_path
             )
@@ -175,7 +175,7 @@ class CodeFinder:
 
     def find_by_content(self, search_term: str, repo_path: Optional[str] = None) -> List[Dict]:
         """Find code by content matching in source or docstrings using the full-text index."""
-        if self._is_falkordb:
+        if self._lacks_native_fulltext:
             return self._find_by_content_falkordb(search_term, repo_path)
         with self.driver.session() as session:
             result = session.run(f"""
@@ -260,11 +260,11 @@ class CodeFinder:
         # portable Levenshtein over candidate names instead.
         lucene_fuzzy_query = (
             " ".join(f"{t}~{edit_distance}" for t in user_query.split())
-            if fuzzy_search and not self._is_falkordb
+            if fuzzy_search and not self._lacks_native_fulltext
             else user_query
         )
-        name_lookup_q = lucene_fuzzy_query if (fuzzy_search and not self._is_falkordb) else user_query
-        content_lookup_q = lucene_fuzzy_query if (fuzzy_search and not self._is_falkordb) else user_query
+        name_lookup_q = lucene_fuzzy_query if (fuzzy_search and not self._lacks_native_fulltext) else user_query
+        content_lookup_q = lucene_fuzzy_query if (fuzzy_search and not self._lacks_native_fulltext) else user_query
 
         results: Dict[str, Any] = {
             "query": lucene_fuzzy_query if fuzzy_search else user_query,

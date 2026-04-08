@@ -469,27 +469,3 @@ def pre_scan_java(files: list[Path], parser_wrapper) -> dict:
             error_logger(f"Error pre-scanning Java file {path}: {e}")
             
     return name_to_files
-def _find_annotations(tree):
-    # Detect annotation definitions like @interface CustomAnnotation
-    annotations = []
-    for node in tree.find_all("annotation_type_declaration"):
-        name = node.child_by_field_name("name").text
-        annotations.append({
-            "type": "Annotation",
-            "name": name,
-            "location": node.start_point
-        })
-    return annotations
-
-def _find_applied_annotations(tree):
-    # Detect usages like @Entity, @Override
-    applied = []
-    for node in tree.find_all("marker_annotation"):
-        name = node.child_by_field_name("name").text
-        applied.append({
-            "type": "AnnotationUsage",
-            "name": name,
-            "location": node.start_point
-        })
-    return applied
-

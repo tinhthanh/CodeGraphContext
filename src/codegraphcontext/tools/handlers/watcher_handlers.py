@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from ...utils.debug_log import debug_log, error_logger
+from ...utils.debug_log import error_logger
 from ...utils.repo_path import any_repo_matches_path
 
 def list_watched_paths(code_watcher, **args) -> Dict[str, Any]:
@@ -64,9 +64,6 @@ def watch_directory(code_watcher, list_repositories_func, add_code_func, **args)
             }
         else:
             # If not indexed, perform the scan AND start the watcher
-            scan_job_result = add_code_to_graph_tool(path=path_str, is_dependency=False)
-            # The add_code_func passed might be the raw handler or wrapper. 
-            # Ideally we call the function passed in.
             scan_job_result = add_code_func(path=path_str, is_dependency=False)
 
             if "error" in scan_job_result:

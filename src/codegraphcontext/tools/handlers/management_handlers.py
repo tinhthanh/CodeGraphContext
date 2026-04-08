@@ -171,9 +171,14 @@ def load_bundle(code_finder: CodeFinder, **args) -> Dict[str, Any]:
             stats = {}
             # Parse simple stats from message if possible, or just return success
             if "Nodes:" in message:
-                 # Best effort parsing, not critical
-                 pass
-                 
+                import re as _re
+                nodes_match = _re.search(r'Nodes:\s*(\d+)', message)
+                edges_match = _re.search(r'Edges:\s*(\d+)', message)
+                if nodes_match:
+                    stats["nodes"] = int(nodes_match.group(1))
+                if edges_match:
+                    stats["edges"] = int(edges_match.group(1))
+
             return {
                 "success": True,
                 "message": message,
