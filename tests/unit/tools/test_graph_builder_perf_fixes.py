@@ -222,10 +222,9 @@ class TestCreateAllFunctionCallsV3:
         calls = self._run(file_data)
         queries = [c["query"] for c in calls]
         assert any("UNWIND" in q for q in queries), "Expected UNWIND queries"
-        assert not any("MERGE (caller" in q for q in queries), "Should not use per-call MERGE"
 
-    def test_uses_create_not_merge_for_calls_rel(self):
-        """CALLS relationships should be written with CREATE, not MERGE."""
+    def test_uses_merge_for_calls_rel(self):
+        """CALLS relationships should use MERGE to prevent duplicates on re-index."""
         file_data = [{
             "path": "/repo/a.py",
             "functions": [{"name": "foo", "line_number": 1}],
@@ -242,7 +241,7 @@ class TestCreateAllFunctionCallsV3:
         calls = self._run(file_data)
         call_rels = [c["query"] for c in calls if "CALLS" in c["query"]]
         for q in call_rels:
-            assert "CREATE" in q, f"Expected CREATE in CALLS query, got: {q[:120]}"
+            assert "MERGE" in q, f"Expected MERGE in CALLS query, got: {q[:120]}"
 
     def test_empty_file_data_writes_nothing(self):
         calls = self._run([])
