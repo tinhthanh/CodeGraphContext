@@ -38,4 +38,5 @@ Open your AI Chat and talk naturally. The AI now has a "tool" it can call.
 ## 4. Troubleshooting
 
 *   **"Component not found":** This usually means the MCP server didn't start. Check the logs in your AI editor.
-*   **"Database error":** Ensure your Neo4j container is running (`docker ps`) or that your Python environment is active.
+*   **"Database error":** Embedded backends (**FalkorDB Lite**, **KuzuDB**) need **no external database setup**—if you use them, the problem is usually config, disk, or Python environment. If you use **Neo4j**, ensure the container or server is running (`docker ps` / service status) and credentials match your config (**`DEFAULT_DATABASE`** and related env vars).
+*   **Diagnostics:** Run **`cgc doctor`** for a quick health check of your install, backend, and common configuration issues.

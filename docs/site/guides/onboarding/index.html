@@ -374,6 +374,26 @@
   
 
       
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../deployment/" class="md-tabs__link">
+          
+  
+  
+  Deployment
+
+        </a>
+      </li>
+    
+  
+
+      
     </ul>
   </div>
 </nav>
@@ -1047,6 +1067,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../agent_skill_codegraphcontext/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent skill (AI assistants)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../visualization/" class="md-nav__link">
         
   
@@ -1055,6 +1103,34 @@
     
   
     Visualizing the Graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contexts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contexts (Multi-Graph)
   
 
     
@@ -1823,6 +1899,235 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Deployment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/DOCKER_README/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docker Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/DOCKER_COMPLETE_GUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docker Complete Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/DOCKER_DEPLOYMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docker Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/HOSTING_COMPARISON/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hosting Comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/DEPLOYMENT_CHECKLIST/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -2002,13 +2307,14 @@
 <h2 id="detailed-directory-breakdown">Detailed Directory Breakdown</h2>
 <h3 id="srccodegraphcontext"><code>src/codegraphcontext/</code></h3>
 <p>This is the <strong>Core Engine</strong> containing all the Python logic to index, watch, and query code contexts.
-- <strong><code>cli/</code></strong>: Directory housing the command-line interface logic using <code>click</code> or <code>typer</code> frameworks. All commands like <code>cgc index</code>, <code>cgc list</code>, and <code>cgc clean</code> live here.
-- <strong><code>db/</code></strong>: The Database Abstraction Layer. Contains drivers and query execution logic for connecting to <strong>KùzuDB</strong> (our embedded default) and <strong>Neo4j</strong> (for enterprise-scale usages).
-- <strong><code>parsers/</code></strong>: Collection of language-specific Tree-sitter implementations. Each script corresponds to a language (e.g., <code>python.py</code>, <code>javascript.py</code>) responsible for translating syntax ASTs into standard nodes/edges.
+- <strong><code>cli/</code></strong>: Directory housing the command-line interface logic using <strong>Typer</strong>. All commands like <code>cgc index</code>, <code>cgc list</code>, and <code>cgc clean</code> live here.
+- <strong><code>core/</code></strong>: Core engine pieces including <strong>database drivers and connection logic</strong>. <strong>FalkorDB</strong> (Lite and remote) is the primary path on Unix/Python 3.12+; <strong>KuzuDB</strong> supports embedded use (including Windows/fallback); <strong>Neo4j</strong> is available for remote or production deployments.
+- <strong><code>tools/languages/</code></strong>: Collection of language-specific Tree-sitter implementations. Each module corresponds to a language (e.g., <code>python.py</code>, <code>javascript.py</code>) responsible for translating syntax ASTs into standard nodes/edges.
 - <strong><code>utils/</code></strong>: Shared helpers across the project (logging, environment validation).
 - <strong><code>graph_builder.py</code></strong>: The heavy-lifter file. Coordinates parsing across files, batches nodes and edges, and commits them to the DB.
-- <strong><code>server.py</code></strong>: The main Model Context Protocol (MCP) server. Used by tools like Cursor or Claude Desktop to natively talk to this tool.
-- <strong><code>watchdog/</code></strong>: Code that leverages <code>watchdog</code> to continuously monitor files for changes and instantly trigger an incremental index.</p>
+- <strong><code>server.py</code></strong>: The main Model Context Protocol (MCP) server. Used by tools like Cursor or Claude Desktop to natively talk to this tool; tool behavior is implemented in <strong><code>tools/handlers/</code></strong> modules that the server delegates to.
+- <strong><code>core/watcher.py</code></strong>: File watching that uses the <strong><code>watchdog</code></strong> library to monitor paths and trigger incremental indexing.
+- <strong><code>tools/indexing/</code></strong>: Indexing pipeline pieces (including persistence and graph writing used during builds).</p>
 <h3 id="docs"><code>docs/</code></h3>
 <p>Contains the knowledge base you are currently reading!
 - <strong><code>mkdocs.yml</code></strong>: Structure configuration for the static site generator.
@@ -2037,9 +2343,9 @@
 <hr />
 <h2 id="where-to-start-modifying">Where to start modifying?</h2>
 <ul>
-<li><strong>Want to add a new Language?</strong> Look in <code>src/codegraphcontext/parsers/</code>. You'll need to define a new parser class and write Tree-sitter queries.</li>
-<li><strong>Want to add a new MCP Action?</strong> Head to <code>src/codegraphcontext/server.py</code>. The <code>@app.tool</code> decorators expose new commands to Claude/Cursor.</li>
-<li><strong>Want to change Database connections?</strong> Modify <code>src/codegraphcontext/db/</code>.</li>
+<li><strong>Want to add a new language?</strong> Look in <code>src/codegraphcontext/tools/languages/</code>. You'll need to define a new parser class and write Tree-sitter queries.</li>
+<li><strong>Want to add a new MCP tool?</strong> Add or extend a handler under <code>src/codegraphcontext/tools/handlers/</code> and wire it from <code>src/codegraphcontext/server.py</code> (the server delegates to these modules rather than using ad-hoc <code>@app.tool</code>-style decorators on a monolithic file).</li>
+<li><strong>Want to change database connections?</strong> Inspect drivers and related logic under <code>src/codegraphcontext/core/</code> and configuration (e.g. <strong><code>DEFAULT_DATABASE</code></strong>).</li>
 <li><strong>UI Tweaks on the Visualizer?</strong> Change <code>website/src/components/CodeGraphViewer.tsx</code> and run <code>npm run dev</code> in that folder.</li>
 </ul>
 <p>Enjoy contributing to CodeGraphContext! </p>
