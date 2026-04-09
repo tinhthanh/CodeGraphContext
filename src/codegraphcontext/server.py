@@ -22,7 +22,12 @@ from .tools.graph_builder import GraphBuilder
 from .tools.code_finder import CodeFinder
 from .tools.package_resolver import get_local_package_path
 from .utils.debug_log import debug_log, info_logger, error_logger, warning_logger, debug_logger
-from .cli.config_manager import resolve_context
+from .cli.config_manager import (
+    resolve_context,
+    discover_child_contexts,
+    save_workspace_mapping,
+    get_workspace_mapping,
+)
 
 # Import Tool Definitions and Handlers
 from .tool_definitions import TOOLS
@@ -92,15 +97,28 @@ class MCPServer:
                   running loop or creates a new one.
             cwd: Working directory used for context resolution. Defaults to Path.cwd().
         """
+        self.cwd = (cwd or Path.cwd()).resolve()
+        self.discovered_child_contexts: List[dict] = []
+        self._context_note_pending = False
+
         try:
-            ctx = resolve_context(cwd=cwd or Path.cwd())
+            ctx = resolve_context(cwd=self.cwd)
             self.resolved_context = ctx
 
             if ctx.database:
                 os.environ['CGC_RUNTIME_DB_TYPE'] = ctx.database
 
             self.db_manager = get_database_manager(db_path=ctx.db_path)
-            self.db_manager.get_driver() 
+            self.db_manager.get_driver()
+
+            if not ctx.is_local:
+                try:
+                    children = discover_child_contexts(self.cwd, max_depth=1)
+                    if children:
+                        self.discovered_child_contexts = [asdict(c) for c in children]
+                        self._context_note_pending = True
+                except Exception:
+                    pass
         except ValueError as e:
             raise ValueError(f"Database configuration error: {e}")
 
@@ -220,6 +238,96 @@ class MCPServer:
     def get_repository_stats_tool(self, **args) -> Dict[str, Any]:
         return management_handlers.get_repository_stats(self.code_finder, **args)
 
+    def discover_codegraph_contexts_tool(self, **args) -> Dict[str, Any]:
+        scan_path = Path(args.get("path", str(self.cwd))).resolve()
+        max_depth = int(args.get("max_depth", 1))
+        try:
+            children = discover_child_contexts(scan_path, max_depth=max_depth)
+            if not children:
+                return {
+                    "status": "no_contexts_found",
+                    "message": f"No .codegraphcontext folders found under {scan_path} (depth={max_depth}).",
+                    "contexts": [],
+                }
+            return {
+                "status": "ok",
+                "message": f"Found {len(children)} context(s) under {scan_path}.",
+                "contexts": [asdict(c) for c in children],
+            }
+        except Exception as e:
+            return {"error": f"Discovery failed: {e}"}
+
+    def switch_context_tool(self, **args) -> Dict[str, Any]:
+        raw_path = args.get("context_path", "")
+        should_save = args.get("save", True)
+
+        if not raw_path:
+            return {"error": "context_path is required."}
+
+        target = Path(raw_path).resolve()
+        # Accept either the repo dir or the .codegraphcontext dir directly
+        if target.name == ".codegraphcontext":
+            cgc_dir = target
+        else:
+            cgc_dir = target / ".codegraphcontext"
+
+        if not cgc_dir.exists() or not cgc_dir.is_dir():
+            return {"error": f"No .codegraphcontext directory found at {cgc_dir}."}
+
+        local_db = "falkordb"
+        local_yaml = cgc_dir / "config.yaml"
+        if local_yaml.exists():
+            try:
+                import yaml
+                with open(local_yaml) as f:
+                    raw = yaml.safe_load(f) or {}
+                local_db = raw.get("database", "falkordb")
+            except Exception:
+                pass
+
+        new_db_path = str(cgc_dir / "db" / local_db)
+
+        try:
+            # Tear down old connection
+            try:
+                self.db_manager.close_driver()
+            except Exception:
+                pass
+
+            os.environ['CGC_RUNTIME_DB_TYPE'] = local_db
+            new_manager = get_database_manager(db_path=new_db_path)
+            new_manager.get_driver()
+
+            self.db_manager = new_manager
+            self.resolved_context = type(self.resolved_context)(
+                mode="per-repo",
+                context_name="",
+                database=local_db,
+                db_path=new_db_path,
+                cgcignore_path=str(cgc_dir / ".cgcignore"),
+                is_local=True,
+            )
+
+            # Rebuild dependent components with the new DB manager
+            self.graph_builder = GraphBuilder(self.db_manager, self.job_manager, self.loop)
+            self.code_finder = CodeFinder(self.db_manager)
+            self.code_watcher = CodeWatcher(self.graph_builder, self.job_manager)
+
+            if should_save:
+                save_workspace_mapping(self.cwd, cgc_dir)
+
+            self._context_note_pending = False
+
+            return {
+                "status": "ok",
+                "message": f"Switched to context at {cgc_dir}.",
+                "database": local_db,
+                "db_path": new_db_path,
+                "saved": should_save,
+            }
+        except Exception as e:
+            return {"error": f"Failed to switch context: {e}"}
+
 
     async def handle_tool_call(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -244,13 +352,29 @@ class MCPServer:
             "unwatch_directory": self.unwatch_directory_tool,
             "load_bundle": self.load_bundle_tool,
             "search_registry_bundles": self.search_registry_bundles_tool,
-            "get_repository_stats": self.get_repository_stats_tool
+            "get_repository_stats": self.get_repository_stats_tool,
+            "discover_codegraph_contexts": self.discover_codegraph_contexts_tool,
+            "switch_context": self.switch_context_tool,
         }
         handler = tool_map.get(tool_name)
         if handler:
-            # Run the synchronous tool function in a separate thread to avoid
-            # blocking the main asyncio event loop.
-            return await asyncio.to_thread(handler, **args)
+            result = await asyncio.to_thread(handler, **args)
+
+            if self._context_note_pending and tool_name not in (
+                "discover_codegraph_contexts", "switch_context"
+            ):
+                names = [c["repo_name"] for c in self.discovered_child_contexts]
+                note = (
+                    "NOTE: No CodeGraphContext database was found at the current workspace root. "
+                    f"However, the following child directories have indexed databases: {names}. "
+                    "Use the `switch_context` tool to connect to one, or "
+                    "`discover_codegraph_contexts` for a deeper scan."
+                )
+                if isinstance(result, dict):
+                    result["_context_discovery_note"] = note
+                self._context_note_pending = False
+
+            return result
         else:
             return {"error": f"Unknown tool: {tool_name}"}
 
