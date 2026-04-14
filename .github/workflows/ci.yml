@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  rust-tests:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo test
+        run: cd rust && cargo test -p cgc-core
+
+  build-wheel:
+    name: Build wheel (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist
+
+      - name: Install and test
+        run: |
+          pip install dist/*.whl
+          python -c "
+          from codegraphcontext._cgc_rust import parse_file
+          from codegraphcontext.tools.indexing.engine import RUST_AVAILABLE
+          assert RUST_AVAILABLE
+          print(f'Build OK: Python ${{ matrix.python }}')
+          "
