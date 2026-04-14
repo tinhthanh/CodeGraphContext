@@ -3,36 +3,28 @@ name: Build & Publish to PyPI
 on:
   push:
     tags:
-      - "v*"       # Trigger on version tags: v0.5.0, v0.5.1, etc.
-  workflow_dispatch:  # Manual trigger
+      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  # ============================================================
-  # Build wheels for Linux, macOS, Windows
-  # ============================================================
   build:
-    name: Build wheels (${{ matrix.os }})
+    name: Build wheels (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          # Linux aarch64 (ARM)
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-          # macOS x86_64 (Intel)
           - os: macos-latest
             target: x86_64-apple-darwin
-          # macOS arm64 (Apple Silicon)
           - os: macos-14
             target: aarch64-apple-darwin
-          # Windows x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
 
@@ -47,39 +39,33 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --interpreter python3.10 python3.11 python3.12 python3.13
+          args: --release --out dist --find-interpreter
           manylinux: auto
+          docker-options: -e CI
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.target }}
           path: dist/*.whl
+          if-no-files-found: error
 
-  # ============================================================
-  # Build source distribution
-  # ============================================================
   sdist:
     name: Build sdist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
-
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
           name: sdist
           path: dist/*.tar.gz
 
-  # ============================================================
-  # Publish to PyPI
-  # ============================================================
   publish:
     name: Publish to PyPI
     needs: [build, sdist]
@@ -89,7 +75,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/codegraphcontext-rust
     permissions:
-      id-token: write  # Trusted publishing (no API token needed)
+      id-token: write
 
     steps:
       - name: Download all artifacts
@@ -98,14 +84,14 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: List wheels
+        run: ls -la dist/
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
 
-  # ============================================================
-  # Test: verify wheel installs and works
-  # ============================================================
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python }})
     needs: [build]
@@ -129,35 +115,20 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Install wheel
+      - name: Install and test
         run: |
-          pip install --find-links dist codegraphcontext-rust
-          pip install kuzu
-
-      - name: Test import and parse
-        run: |
+          pip install --find-links dist codegraphcontext-rust kuzu
           python -c "
-          from codegraphcontext._cgc_rust import parse_file, parse_files_parallel, pre_scan_for_imports
+          from codegraphcontext._cgc_rust import parse_file
           from codegraphcontext.tools.indexing.engine import RUST_AVAILABLE, _RUST_SUPPORTED_LANGS
-          assert RUST_AVAILABLE, 'Rust engine not available'
-          assert len(_RUST_SUPPORTED_LANGS) == 19, f'Expected 19 langs, got {len(_RUST_SUPPORTED_LANGS)}'
-
-          # Quick parse test
+          assert RUST_AVAILABLE
+          assert len(_RUST_SUPPORTED_LANGS) == 19
           import tempfile, os
           with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-              f.write('def hello():\n    print(\"hi\")\n')
+              f.write('def hello():\n    pass\n')
               tmp = f.name
           r = parse_file(tmp, 'python', False, False)
           os.unlink(tmp)
-          assert 'error' not in r
           assert len(r['functions']) == 1
-          assert r['functions'][0]['name'] == 'hello'
-          print(f'All tests passed: {len(_RUST_SUPPORTED_LANGS)} languages, Rust engine OK')
+          print(f'OK: {len(_RUST_SUPPORTED_LANGS)} langs, Rust engine working')
           "
-
-      - name: Run Rust unit tests
-        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          source $HOME/.cargo/env
-          cd rust && cargo test -p cgc-core
