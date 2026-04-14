@@ -17,30 +17,30 @@ const COMPLEXITY_TYPES: &[&str] = &[
 
 const QUERY_FUNCTIONS: &str = r#"
     (function_declaration
-        (simple_identifier) @name
+        name: (identifier) @name
     ) @function_node
 "#;
 
 const QUERY_CLASSES: &str = r#"
     (class_declaration
-        (type_identifier) @name
+        name: (identifier) @name
     ) @class
 "#;
 
 const QUERY_INTERFACES: &str = r#"
     (class_declaration
-        (type_identifier) @name
+        name: (identifier) @name
     ) @interface
 "#;
 
 const QUERY_OBJECTS: &str = r#"
     (object_declaration
-        (type_identifier) @name
+        name: (identifier) @name
     ) @object
 "#;
 
 const QUERY_IMPORTS: &str = r#"
-    (import_header) @import
+    (import) @import
 "#;
 
 const QUERY_CALLS: &str = r#"
@@ -50,15 +50,15 @@ const QUERY_CALLS: &str = r#"
 const QUERY_VARIABLES: &str = r#"
     (property_declaration
         (variable_declaration
-            (simple_identifier) @name
+            (identifier) @name
         )
     ) @variable
 "#;
 
 const QUERY_PRE_SCAN: &str = r#"
-    (class_declaration (type_identifier) @name)
-    (object_declaration (type_identifier) @name)
-    (function_declaration (simple_identifier) @name)
+    (class_declaration name: (identifier) @name)
+    (object_declaration name: (identifier) @name)
+    (function_declaration name: (identifier) @name)
 "#;
 
 pub struct KotlinExtractor;
@@ -98,11 +98,11 @@ impl KotlinExtractor {
         while let Some(parent) = curr {
             match parent.kind() {
                 "function_declaration" => {
-                    // Find simple_identifier child for function name
+                    // Find identifier child for function name
                     let mut name = None;
                     for i in 0..parent.child_count() {
                         if let Some(child) = parent.child(i) {
-                            if child.kind() == "simple_identifier" {
+                            if child.kind() == "identifier" {
                                 name = Some(get_node_text(&child, source).to_string());
                                 break;
                             }
@@ -118,8 +118,8 @@ impl KotlinExtractor {
                     let mut name = None;
                     for i in 0..parent.child_count() {
                         if let Some(child) = parent.child(i) {
-                            if child.kind() == "type_identifier"
-                                || child.kind() == "simple_identifier"
+                            if child.kind() == "identifier"
+                                || child.kind() == "identifier"
                             {
                                 name = Some(get_node_text(&child, source).to_string());
                                 break;
@@ -136,8 +136,8 @@ impl KotlinExtractor {
                     let mut name = Some("Companion".to_string());
                     for i in 0..parent.child_count() {
                         if let Some(child) = parent.child(i) {
-                            if child.kind() == "type_identifier"
-                                || child.kind() == "simple_identifier"
+                            if child.kind() == "identifier"
+                                || child.kind() == "identifier"
                             {
                                 name = Some(get_node_text(&child, source).to_string());
                                 break;
@@ -164,8 +164,8 @@ impl KotlinExtractor {
             {
                 for i in 0..parent.child_count() {
                     if let Some(child) = parent.child(i) {
-                        if child.kind() == "type_identifier"
-                            || child.kind() == "simple_identifier"
+                        if child.kind() == "identifier"
+                            || child.kind() == "identifier"
                         {
                             return Some(get_node_text(&child, source).to_string());
                         }
@@ -262,7 +262,7 @@ impl KotlinExtractor {
 
 impl LanguageExtractor for KotlinExtractor {
     fn language(&self) -> Language {
-        tree_sitter_kotlin::LANGUAGE.into()
+        tree_sitter_kotlin_ng::LANGUAGE.into()
     }
 
     fn lang_name(&self) -> &str {
@@ -508,7 +508,7 @@ impl LanguageExtractor for KotlinExtractor {
 
             if let Some(first_child) = node.child(0) {
                 match first_child.kind() {
-                    "simple_identifier" => {
+                    "identifier" => {
                         call_name = get_node_text(&first_child, source).to_string();
                     }
                     "navigation_expression" => {
@@ -526,14 +526,14 @@ impl LanguageExtractor for KotlinExtractor {
                                 if suf.kind() == "navigation_suffix" {
                                     for k in 0..suf.child_count() {
                                         if let Some(c) = suf.child(k) {
-                                            if c.kind() == "simple_identifier" {
+                                            if c.kind() == "identifier" {
                                                 call_name =
                                                     get_node_text(&c, source).to_string();
                                                 break;
                                             }
                                         }
                                     }
-                                } else if suf.kind() == "simple_identifier" {
+                                } else if suf.kind() == "identifier" {
                                     call_name = get_node_text(&suf, source).to_string();
                                 }
                             }
@@ -662,7 +662,7 @@ mod tests {
 
     fn parse_source(code: &str) -> (tree_sitter::Tree, Vec<u8>) {
         let mut parser = Parser::new();
-        let lang: Language = tree_sitter_kotlin::LANGUAGE.into();
+        let lang: Language = tree_sitter_kotlin_ng::LANGUAGE.into();
         parser.set_language(&lang).unwrap();
         let source = code.as_bytes().to_vec();
         let tree = parser.parse(&source, None).unwrap();

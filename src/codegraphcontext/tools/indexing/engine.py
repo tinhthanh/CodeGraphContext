@@ -100,10 +100,10 @@ def sanitize_props(props):
     return _rust_sanitize_props(props)
 
 
-# Languages supported by the Rust engine (Phase 4: 17 languages)
-# Perl and Kotlin disabled due to tree-sitter version incompatibility
+# Languages supported by the Rust engine (18 languages)
+# Perl disabled due to tree-sitter version incompatibility (requires 0.26)
 _RUST_SUPPORTED_LANGS = {
     "python", "javascript", "typescript", "tsx", "go", "java", "cpp",
-    "c", "rust", "ruby", "c_sharp", "php",
+    "c", "rust", "ruby", "c_sharp", "php", "kotlin",
     "scala", "swift", "haskell", "dart", "elixir",
 }

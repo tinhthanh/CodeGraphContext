@@ -10,12 +10,12 @@ pub mod rust_lang;
 pub mod ruby;
 pub mod csharp;
 pub mod php;
-// pub mod kotlin;  // Disabled: tree-sitter-kotlin requires tree-sitter 0.20
+pub mod kotlin;
 pub mod scala;
 pub mod swift;
 pub mod haskell;
 pub mod dart;
-// pub mod perl;  // Disabled: tree-sitter-perl requires tree-sitter 0.26
+// pub mod perl;  // Disabled: tree-sitter-perl requires tree-sitter 0.26 (links conflict)
 pub mod elixir;
 
 use tree_sitter::{Language, Node};
@@ -142,7 +142,7 @@ pub fn get_extractor(lang_name: &str) -> Option<Box<dyn LanguageExtractor>> {
         "ruby" => Some(Box::new(ruby::RubyExtractor)),
         "c_sharp" => Some(Box::new(csharp::CSharpExtractor)),
         "php" => Some(Box::new(php::PhpExtractor)),
-        // "kotlin" disabled: tree-sitter-kotlin requires tree-sitter 0.20
+        "kotlin" => Some(Box::new(kotlin::KotlinExtractor)),
         "scala" => Some(Box::new(scala::ScalaExtractor)),
         "swift" => Some(Box::new(swift::SwiftExtractor)),
         "haskell" => Some(Box::new(haskell::HaskellExtractor)),
