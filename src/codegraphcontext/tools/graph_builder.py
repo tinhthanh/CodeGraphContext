@@ -182,9 +182,26 @@ class GraphBuilder:
         return {"deleted": True, "path": file_path_str}
 
     def parse_file(self, repo_path: Path, path: Path, is_dependency: bool = False) -> Dict:
+        lang_name = self.parsers.get(path.suffix)
+        if not lang_name:
+            warning_logger(f"No parser found for file extension {path.suffix}. Skipping {path}")
+            return {"path": str(path), "error": f"No parser for {path.suffix}", "unsupported": True}
+
+        # Try Rust engine first (faster, no Python overhead)
+        try:
+            from .indexing.engine import RUST_AVAILABLE, _RUST_SUPPORTED_LANGS, _rust_parse_file
+            if RUST_AVAILABLE and lang_name in _RUST_SUPPORTED_LANGS and path.suffix != ".ipynb":
+                index_source = (get_config_value("INDEX_SOURCE") or "false").lower() == "true"
+                file_data = _rust_parse_file(str(path), lang_name, is_dependency, index_source)
+                if "error" not in file_data:
+                    file_data["repo_path"] = str(repo_path)
+                return file_data
+        except Exception:
+            pass  # Fall through to Python parser
+
+        # Python fallback (for .ipynb, unsupported langs, or Rust errors)
         parser = self.get_parser(path.suffix)
         if not parser:
-            warning_logger(f"No parser found for file extension {path.suffix}. Skipping {path}")
             return {"path": str(path), "error": f"No parser for {path.suffix}", "unsupported": True}
 
         debug_log(f"[parse_file] Starting parsing for: {path} with {parser.language_name} parser")

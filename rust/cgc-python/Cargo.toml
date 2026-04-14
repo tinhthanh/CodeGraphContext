@@ -1,0 +1,12 @@
+[package]
+name = "cgc-python"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "_cgc_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+cgc-core = { path = "../cgc-core" }
+pyo3 = { version = "0.24", features = ["extension-module"] }

@@ -76,3 +76,8 @@ cgc_btc/
 *.spec
 todo.md
 .codegraphcontext
+# Rust build artifacts
+rust/target/
+*.so
+*.dylib
+*.pyd

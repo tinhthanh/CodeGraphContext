@@ -1,3 +1,7 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
 [project]
 name = "codegraphcontext"
 version = "0.4.2"
@@ -56,6 +60,12 @@ dev = [
 [project.scripts]
 cgc = "codegraphcontext.cli.main:app"
 codegraphcontext = "codegraphcontext.cli.main:app"
+
+[tool.maturin]
+manifest-path = "rust/cgc-python/Cargo.toml"
+python-source = "src"
+module-name = "codegraphcontext._cgc_rust"
+features = ["pyo3/extension-module"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
