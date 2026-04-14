@@ -21,7 +21,7 @@ tree-sitter-scala = "0.25"
 tree-sitter-swift = "0.7"
 tree-sitter-haskell = "0.23"
 tree-sitter-dart = "0.1"
-# tree-sitter-perl = "1.1"  # Requires tree-sitter 0.26 (links conflict with 0.25)
+tree-sitter-perl-vendor = { path = "../tree-sitter-perl-vendor" }
 tree-sitter-elixir = "0.3"
 streaming-iterator = "0.1"
 rayon = "1.10"

@@ -15,7 +15,7 @@ pub mod scala;
 pub mod swift;
 pub mod haskell;
 pub mod dart;
-// pub mod perl;  // Disabled: tree-sitter-perl requires tree-sitter 0.26 (links conflict)
+pub mod perl;
 pub mod elixir;
 
 use tree_sitter::{Language, Node};
@@ -147,7 +147,7 @@ pub fn get_extractor(lang_name: &str) -> Option<Box<dyn LanguageExtractor>> {
         "swift" => Some(Box::new(swift::SwiftExtractor)),
         "haskell" => Some(Box::new(haskell::HaskellExtractor)),
         "dart" => Some(Box::new(dart::DartExtractor)),
-        // "perl" disabled: tree-sitter-perl requires tree-sitter 0.26
+        "perl" => Some(Box::new(perl::PerlExtractor)),
         "elixir" => Some(Box::new(elixir::ElixirExtractor)),
         _ => None,
     }

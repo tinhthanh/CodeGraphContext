@@ -1,0 +1,11 @@
+[package]
+name = "tree-sitter-perl-vendor"
+version = "0.1.0"
+edition = "2021"
+description = "Vendored Perl grammar for tree-sitter (compatible with tree-sitter 0.25)"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1.2"
