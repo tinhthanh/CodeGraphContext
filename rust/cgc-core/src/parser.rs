@@ -117,15 +117,20 @@ pub fn parse_and_prescan_parallel(
                 let names = match &result {
                     ParseResult::Ok(data) => {
                         let mut names = Vec::new();
+                        // Include ALL functions (not just top-level) to match Python pre-scan
                         for f in &data.functions {
-                            if f.context.is_none() {
-                                names.push(f.name.clone());
-                            }
+                            names.push(f.name.clone());
                         }
                         for c in &data.classes {
-                            if c.context.is_none() {
-                                names.push(c.name.clone());
-                            }
+                            // Strip [interface]/[type] prefix added by TS extractor
+                            let clean = if c.name.starts_with("[interface] ") {
+                                c.name.strip_prefix("[interface] ").unwrap_or(&c.name)
+                            } else if c.name.starts_with("[type] ") {
+                                c.name.strip_prefix("[type] ").unwrap_or(&c.name)
+                            } else {
+                                &c.name
+                            };
+                            names.push(clean.to_string());
                         }
                         names
                     }
