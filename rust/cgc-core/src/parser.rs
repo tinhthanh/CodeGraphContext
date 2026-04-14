@@ -89,13 +89,93 @@ pub fn parse_files_parallel(
     })
 }
 
+/// Parse files in parallel AND build imports_map in one pass.
+/// Eliminates the need for a separate pre-scan phase.
+pub fn parse_and_prescan_parallel(
+    file_specs: &[(String, String, bool)], // (path, lang, is_dependency)
+    num_threads: Option<usize>,
+) -> (Vec<ParseResult>, HashMap<String, Vec<String>>) {
+    use rayon::prelude::*;
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads.unwrap_or(0))
+        .build()
+        .expect("Failed to build rayon thread pool");
+
+    // Parallel parse + extract names in one pass
+    let results: Vec<(ParseResult, String, Vec<String>)> = pool.install(|| {
+        file_specs
+            .par_iter()
+            .map(|(path, lang, is_dep)| {
+                let result = parse_file(path, lang, *is_dep, false);
+
+                // Extract pre-scan names from parsed data
+                let resolved = fs::canonicalize(Path::new(path))
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| path.clone());
+
+                let names = match &result {
+                    ParseResult::Ok(data) => {
+                        let mut names = Vec::new();
+                        for f in &data.functions {
+                            if f.context.is_none() {
+                                names.push(f.name.clone());
+                            }
+                        }
+                        for c in &data.classes {
+                            if c.context.is_none() {
+                                names.push(c.name.clone());
+                            }
+                        }
+                        names
+                    }
+                    ParseResult::Err { .. } => Vec::new(),
+                };
+
+                (result, resolved, names)
+            })
+            .collect()
+    });
+
+    // Build imports_map + collect parse results
+    let mut parse_results = Vec::with_capacity(results.len());
+    let mut imports_map: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (result, resolved_path, names) in results {
+        for name in names {
+            imports_map
+                .entry(name)
+                .or_default()
+                .push(resolved_path.clone());
+        }
+        parse_results.push(result);
+    }
+
+    (parse_results, imports_map)
+}
+
 /// Pre-scan files to build imports_map: {symbol_name -> [file_paths]}.
 pub fn pre_scan_for_imports(
     file_specs: &[(String, String)], // (path, extension)
 ) -> HashMap<String, Vec<String>> {
     use rayon::prelude::*;
 
-    // Group by extension for extractor reuse
+    // Phase 1: Batch-resolve all paths upfront (reduce per-file syscalls)
+    let resolved_paths: Vec<(String, String)> = file_specs
+        .par_iter()
+        .filter_map(|(path, ext)| {
+            // Only process files with supported extensions
+            if get_extractor_by_ext(ext).is_none() {
+                return None;
+            }
+            let resolved = fs::canonicalize(Path::new(path))
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| path.clone());
+            Some((path.clone(), resolved))
+        })
+        .collect();
+
+    // Phase 2: Parallel parse + extract names (file I/O + tree-sitter)
     let results: Vec<(String, Vec<String>)> = file_specs
         .par_iter()
         .filter_map(|(path, ext)| {
@@ -106,18 +186,30 @@ pub fn pre_scan_for_imports(
             let tree = parser.parse(&source, None)?;
             let root = tree.root_node();
             let names = extractor.pre_scan_definitions(&root, &source);
+            if names.is_empty() {
+                return None;
+            }
             Some((path.clone(), names))
         })
         .collect();
 
+    // Phase 3: Build imports_map using pre-resolved paths
+    let path_lookup: HashMap<&str, &str> = resolved_paths
+        .iter()
+        .map(|(orig, resolved)| (orig.as_str(), resolved.as_str()))
+        .collect();
+
     let mut imports_map: HashMap<String, Vec<String>> = HashMap::new();
-    for (path, names) in results {
-        let resolved = match fs::canonicalize(Path::new(&path)) {
-            Ok(p) => p.to_string_lossy().to_string(),
-            Err(_) => path,
-        };
+    for (path, names) in &results {
+        let resolved = path_lookup
+            .get(path.as_str())
+            .copied()
+            .unwrap_or(path.as_str());
         for name in names {
-            imports_map.entry(name).or_default().push(resolved.clone());
+            imports_map
+                .entry(name.clone())
+                .or_default()
+                .push(resolved.to_string());
         }
     }
     imports_map

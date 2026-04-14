@@ -52,6 +52,37 @@ fn pre_scan_for_imports(py: Python<'_>, file_specs: Vec<(String, String)>) -> Py
     Ok(dict.into_any().unbind())
 }
 
+/// Parse files in parallel AND build imports_map in one pass.
+/// Returns (list_of_file_data_dicts, imports_map_dict).
+#[pyfunction]
+#[pyo3(signature = (file_specs, num_threads=None))]
+fn parse_and_prescan(
+    py: Python<'_>,
+    file_specs: Vec<(String, String, bool)>,
+    num_threads: Option<usize>,
+) -> PyResult<PyObject> {
+    let (results, imports_map) = py.allow_threads(|| {
+        parser::parse_and_prescan_parallel(&file_specs, num_threads)
+    });
+
+    let file_data_list: Vec<PyObject> = results
+        .into_iter()
+        .map(|r| conversions::parse_result_to_py(py, r))
+        .collect::<PyResult<_>>()?;
+
+    let py_imports = PyDict::new(py);
+    for (name, paths) in imports_map {
+        let py_paths: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+        py_imports.set_item(name, py_paths)?;
+    }
+
+    let result = PyTuple::new(py, &[
+        pyo3::types::PyList::new(py, &file_data_list)?.into_any().unbind(),
+        py_imports.into_any().unbind(),
+    ])?;
+    Ok(result.into_any().unbind())
+}
+
 // --- Resolution bindings ---
 
 /// Convert Python all_file_data + imports_map into Rust types, run resolution, return results.
@@ -441,6 +472,7 @@ fn _cgc_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
     m.add_function(wrap_pyfunction!(parse_files_parallel, m)?)?;
     m.add_function(wrap_pyfunction!(pre_scan_for_imports, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_and_prescan, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_call_groups, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_inheritance, m)?)?;
     m.add_function(wrap_pyfunction!(sanitize_props, m)?)?;

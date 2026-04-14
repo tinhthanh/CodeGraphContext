@@ -20,6 +20,7 @@ if not os.environ.get("CGC_USE_PYTHON_PARSER"):
             parse_file as _rust_parse_file,
             parse_files_parallel as _rust_parse_files_parallel,
             pre_scan_for_imports as _rust_pre_scan,
+            parse_and_prescan as _rust_parse_and_prescan,
             resolve_call_groups as _rust_resolve_calls,
             resolve_inheritance as _rust_resolve_inheritance,
             sanitize_props as _rust_sanitize_props,
