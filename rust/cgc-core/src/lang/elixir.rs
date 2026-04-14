@@ -1,7 +1,7 @@
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{get_node_text, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -40,6 +40,7 @@ const ELIXIR_KEYWORDS: &[&str] = &[
 pub struct ElixirExtractor;
 
 impl ElixirExtractor {
+    #[allow(dead_code)]
     fn execute_query<'a>(
         &self,
         query_str: &str,
@@ -544,7 +545,7 @@ impl LanguageExtractor for ElixirExtractor {
         calls
     }
 
-    fn find_variables(&self, root: &Node, source: &[u8]) -> Vec<VariableData> {
+    fn find_variables(&self, _root: &Node, _source: &[u8]) -> Vec<VariableData> {
         // Elixir uses pattern matching for assignment; variables are not
         // traditionally declared. Return empty for now, matching the Python parser.
         Vec::new()

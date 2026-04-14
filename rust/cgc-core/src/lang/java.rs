@@ -509,7 +509,7 @@ impl LanguageExtractor for JavaExtractor {
 
             let var_name = get_node_text(&node, source).to_string();
 
-            let (context, context_type, _) = self.get_parent_context_java(&node, source);
+            let (context, _, _) = self.get_parent_context_java(&node, source);
             let (class_name, class_type) = self.get_class_context(&node, source);
             let class_context = if class_type.is_some() {
                 class_name

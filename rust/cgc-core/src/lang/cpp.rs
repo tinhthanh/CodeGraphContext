@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{get_node_text, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -665,7 +665,7 @@ impl LanguageExtractor for CppExtractor {
 
         for (node, capture_name) in self.execute_query(QUERY_CALLS, root, source) {
             let raw_text = get_node_text(&node, source);
-            let mut func_name;
+            let func_name;
             let mut inferred_obj_type = None;
 
             match capture_name.as_str() {

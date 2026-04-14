@@ -80,12 +80,14 @@ const QUERY_CLASSES: &str = r#"
     (class) @class
 "#;
 
+#[allow(dead_code)]
 const QUERY_INTERFACES: &str = r#"
     (interface_declaration
         name: (type_identifier) @name
     ) @interface_node
 "#;
 
+#[allow(dead_code)]
 const QUERY_TYPE_ALIASES: &str = r#"
     (type_alias_declaration
         name: (type_identifier) @name

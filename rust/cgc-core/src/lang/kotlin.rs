@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{get_node_text, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -27,6 +27,7 @@ const QUERY_CLASSES: &str = r#"
     ) @class
 "#;
 
+#[allow(dead_code)]
 const QUERY_INTERFACES: &str = r#"
     (class_declaration
         name: (identifier) @name

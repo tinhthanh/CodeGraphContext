@@ -241,9 +241,7 @@ impl LanguageExtractor for HaskellExtractor {
         let mut classes = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        for (node, capture_name) in self.execute_query(QUERY_CLASSES, root, source) {
-            let key = (node.start_byte(), node.end_byte(), node.kind());
-            // Use a string key since kind() returns &str
+        for (node, _capture_name) in self.execute_query(QUERY_CLASSES, root, source) {
             let hash_key = (node.start_byte(), node.end_byte());
             if seen.contains(&hash_key) {
                 continue;

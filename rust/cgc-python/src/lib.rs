@@ -2,7 +2,6 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 mod conversions;
 
@@ -11,7 +10,7 @@ use cgc_core::resolution::calls::{
     build_function_call_groups, CallGroups, CallInput, FileCallData, ResolvedCall,
 };
 use cgc_core::resolution::inheritance::{
-    build_inheritance_and_csharp_files, ClassInfo, FileInheritanceData, InheritanceLink,
+    build_inheritance_and_csharp_files, ClassInfo, FileInheritanceData,
 };
 
 #[pyfunction]

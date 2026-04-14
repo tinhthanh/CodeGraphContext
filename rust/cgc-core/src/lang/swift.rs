@@ -340,7 +340,7 @@ impl LanguageExtractor for SwiftExtractor {
                 continue;
             }
 
-            let call_node = match node.parent() {
+            match node.parent() {
                 Some(p) if p.kind() == "call_expression" => p,
                 _ => continue,
             };
