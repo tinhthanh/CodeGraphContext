@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "codegraphcontext-rust"
-version = "0.5.4"
+version = "0.5.5"
 description = "Rust-accelerated code indexing engine for CodeGraphContext. 19 languages, 5-18x faster parsing via tree-sitter + rayon."
 authors = [
     { name = "Shashank Shekhar Singh", email = "shashankshekharsingh1205@gmail.com" },

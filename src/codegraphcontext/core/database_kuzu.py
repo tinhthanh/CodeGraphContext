@@ -92,6 +92,16 @@ class KuzuDBManager:
 
         return KuzuDriverWrapper(self._conn)
 
+    def get_raw_connection(self):
+        """Get the raw kuzu.Connection for bulk operations (e.g. Parquet COPY FROM).
+
+        Ensures the connection is initialized first via get_driver().
+        Returns the underlying kuzu.Connection, not the wrapper.
+        """
+        if self._conn is None:
+            self.get_driver()  # triggers lazy init
+        return self._conn
+
     def _initialize_schema(self):
         """Creates Node and Rel tables if they don't exist."""
         # Using a set of helper methods to define tables

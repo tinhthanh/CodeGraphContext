@@ -226,8 +226,9 @@ def bulk_load_parquet(
         for imp in fd.get("imports", []):
             name = imp.get("name", "")
             alias = imp.get("alias", "")
-            full = imp.get("full_import_name", name)
             source = imp.get("source", "")
+            # Bug 1 fix: full_import_name fallback chain
+            full = imp.get("full_import_name", "") or source or name
             line_n = imp.get("line_number", 0)
             mod_name = source if source else name
             imported = name if source else ""
