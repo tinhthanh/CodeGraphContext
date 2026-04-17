@@ -39,6 +39,9 @@ class DuckDBGraphWriter:
     """High-performance graph writer backed by DuckDB + Parquet bulk load."""
 
     def __init__(self, db_path: str):
+        self._conn = None  # set before connect to prevent __del__ crash
+        self._schema_created = False
+
         try:
             import duckdb
         except ImportError:
@@ -47,10 +50,9 @@ class DuckDBGraphWriter:
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self._conn = duckdb.connect(db_path)
-        self._schema_created = False
 
     def close(self):
-        if self._conn:
+        if hasattr(self, "_conn") and self._conn:
             self._conn.close()
             self._conn = None
 
