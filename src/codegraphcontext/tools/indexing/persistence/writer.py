@@ -694,6 +694,454 @@ class GraphWriter:
 
         return len(file_batch)
 
+    # ── Fast batch write using CREATE (for initial indexing on empty DB) ──────
+
+    def add_files_batch_to_graph_fast(
+        self,
+        all_file_data: List[Dict[str, Any]],
+        repo_name: str,
+        imports_map: dict,
+        repo_path_str: str,
+        on_progress: Optional[Callable] = None,
+    ) -> int:
+        """Write all parsed files using CREATE instead of MERGE.
+
+        ~5-10x faster than MERGE-based batch writer because CREATE skips
+        the index lookup that MERGE needs.  Only safe on an empty DB
+        (initial indexing, not incremental updates).
+
+        Falls back to add_files_batch_to_graph on any error.
+        """
+        import json as _json
+
+        repo_path_obj = Path(repo_path_str)
+        total = len(all_file_data)
+        batch_size = 2000  # larger batches safe for CREATE (no scan)
+
+        # ── Collect ──────────────────────────────────────────────────
+        file_batch = []
+        dir_set: Dict[str, Dict] = {}  # path → {name, parent_path, parent_label}
+        symbol_batches: Dict[str, List[Dict]] = {}
+        params_batch = []
+        class_fn_batch = []
+        nested_fn_batch = []
+        js_imports_batch = []
+        other_imports_batch = []
+
+        for idx, file_data in enumerate(all_file_data):
+            file_path_str = str(Path(file_data["path"]).resolve())
+            file_name = Path(file_path_str).name
+            is_dep = file_data.get("is_dependency", False)
+            lang = file_data.get("lang")
+
+            try:
+                rel_path = str(Path(file_path_str).relative_to(repo_path_obj))
+            except ValueError:
+                rel_path = file_name
+
+            file_batch.append({
+                "path": file_path_str, "name": file_name,
+                "relative_path": rel_path, "is_dependency": is_dep,
+            })
+
+            # Directory chain (deduplicated via dict)
+            try:
+                rel_to_file = Path(file_path_str).relative_to(repo_path_obj)
+            except ValueError:
+                rel_to_file = Path(file_name)
+
+            parent_path = repo_path_str
+            parent_label = "Repository"
+            for part in rel_to_file.parts[:-1]:
+                dir_path = str(Path(parent_path) / part)
+                if dir_path not in dir_set:
+                    dir_set[dir_path] = {
+                        "dir_path": dir_path, "dir_name": part,
+                        "parent_path": parent_path, "parent_label": parent_label,
+                        "file_path": file_path_str,
+                    }
+                parent_path = dir_path
+                parent_label = "Directory"
+
+            # Symbols
+            for label, items_key in [
+                ("Function", "functions"), ("Class", "classes"),
+                ("Variable", "variables"),
+            ]:
+                for sym in file_data.get(items_key, []):
+                    row = {
+                        "name": sym.get("name", ""),
+                        "path": file_path_str,
+                        "line_number": sym.get("line_number", 0),
+                        "_fp": file_path_str,
+                    }
+                    # Copy known props
+                    for k in ("decorators", "complexity", "return_type",
+                              "docstring", "class_context", "bases",
+                              "is_async", "is_generator", "body_start_line",
+                              "body_end_line", "type"):
+                        v = sym.get(k)
+                        if v is not None:
+                            if isinstance(v, list):
+                                row[k] = [str(x) for x in v] if v else [""]
+                            elif isinstance(v, bool):
+                                row[k] = v
+                            elif isinstance(v, int):
+                                row[k] = v
+                            else:
+                                row[k] = str(v)
+                    symbol_batches.setdefault(label, []).append(row)
+
+                    # Parameters for functions
+                    if label == "Function":
+                        for arg in sym.get("args", []):
+                            arg_name = arg if isinstance(arg, str) else str(arg)
+                            if arg_name:
+                                params_batch.append({
+                                    "arg_name": arg_name,
+                                    "file_path": file_path_str,
+                                    "func_name": sym.get("name", ""),
+                                    "line_number": sym.get("line_number", 0),
+                                })
+
+                        # Class-function containment
+                        ctx = sym.get("class_context")
+                        if ctx:
+                            class_fn_batch.append({
+                                "class_name": ctx,
+                                "func_name": sym.get("name", ""),
+                                "file_path": file_path_str,
+                                "func_line": sym.get("line_number", 0),
+                            })
+
+                        # Nested functions
+                        parent_ctx = sym.get("parent_function")
+                        if parent_ctx:
+                            nested_fn_batch.append({
+                                "outer": parent_ctx,
+                                "inner_name": sym.get("name", ""),
+                                "inner_line": sym.get("line_number", 0),
+                                "file_path": file_path_str,
+                            })
+
+            # Imports
+            for imp in file_data.get("imports", []):
+                imp_name = imp.get("name", "")
+                source = imp.get("source", "")
+                alias = imp.get("alias", "")
+                full_name = imp.get("full_import_name", "") or source or imp_name
+                line_no = imp.get("line_number", 0)
+                if lang in ("javascript", "typescript", "tsx", "jsx"):
+                    js_imports_batch.append({
+                        "file_path": file_path_str,
+                        "module_name": source or imp_name,
+                        "imported_name": imp_name,
+                        "alias": alias or "",
+                        "line_number": line_no,
+                    })
+                else:
+                    other_imports_batch.append({
+                        "file_path": file_path_str,
+                        "name": full_name or imp_name,
+                        "alias": alias or "",
+                        "full_import_name": full_name or "",
+                        "line_number": line_no,
+                    })
+
+        # ── Write with CREATE ────────────────────────────────────────
+        if on_progress:
+            on_progress(0, total, "Fast writing files...")
+
+        try:
+            with self.driver.session() as session:
+                # 1. Files — CREATE (no MERGE needed, DB is empty)
+                for i in range(0, len(file_batch), batch_size):
+                    session.run(
+                        "UNWIND $batch AS row "
+                        "CREATE (f:File {path: row.path, name: row.name, "
+                        "relative_path: row.relative_path, is_dependency: row.is_dependency})",
+                        batch=file_batch[i:i + batch_size],
+                    )
+
+                if on_progress:
+                    on_progress(total // 4, total, "Fast writing directories...")
+
+                # 2. Directories — CREATE + CONTAINS in one query
+                dir_list = list(dir_set.values())
+                for plabel in ("Repository", "Directory"):
+                    subset = [d for d in dir_list if d["parent_label"] == plabel]
+                    for i in range(0, len(subset), batch_size):
+                        chunk = subset[i:i + batch_size]
+                        session.run(
+                            f"UNWIND $batch AS row "
+                            f"MATCH (p:{plabel} {{path: row.parent_path}}) "
+                            f"CREATE (d:Directory {{path: row.dir_path, name: row.dir_name}}) "
+                            f"CREATE (p)-[:CONTAINS]->(d)",
+                            batch=chunk,
+                        )
+
+                # 3. File→parent CONTAINS
+                file_parent = []
+                for fd in file_batch:
+                    fp = fd["path"]
+                    try:
+                        rel = Path(fp).relative_to(repo_path_obj)
+                        parts = rel.parts[:-1]
+                    except ValueError:
+                        parts = ()
+                    if parts:
+                        parent_p = str(repo_path_obj / Path(*parts))
+                        file_parent.append({"parent_path": parent_p, "file_path": fp, "plabel": "Directory"})
+                    else:
+                        file_parent.append({"parent_path": repo_path_str, "file_path": fp, "plabel": "Repository"})
+
+                for plabel in ("Repository", "Directory"):
+                    subset = [d for d in file_parent if d["plabel"] == plabel]
+                    for i in range(0, len(subset), batch_size):
+                        session.run(
+                            f"UNWIND $batch AS row "
+                            f"MATCH (p:{plabel} {{path: row.parent_path}}) "
+                            f"MATCH (f:File {{path: row.file_path}}) "
+                            f"CREATE (p)-[:CONTAINS]->(f)",
+                            batch=subset[i:i + batch_size],
+                        )
+
+                if on_progress:
+                    on_progress(total // 2, total, "Fast writing symbols...")
+
+                # 4. Symbols — CREATE symbol + CONTAINS in single query
+                for label, batch in symbol_batches.items():
+                    # Deduplicate by (name, path, line_number)
+                    seen = set()
+                    deduped = []
+                    for row in batch:
+                        key = (row.get("name", ""), row.get("path", ""), row.get("line_number", 0))
+                        if key not in seen:
+                            seen.add(key)
+                            deduped.append(row)
+
+                    # Normalize types
+                    if deduped:
+                        all_keys = set()
+                        for b in deduped:
+                            all_keys.update(k for k in b.keys() if k != "_fp")
+
+                        for k in all_keys:
+                            counts: Dict[str, int] = {}
+                            for b in deduped:
+                                v = b.get(k)
+                                if v is not None:
+                                    tname = type(v).__name__
+                                    counts[tname] = counts.get(tname, 0) + 1
+                            dominant = max(counts, key=counts.get) if counts else "str"
+
+                            for b in deduped:
+                                v = b.get(k)
+                                if dominant == "list":
+                                    if isinstance(v, list):
+                                        b[k] = [str(x) for x in v] if v else [""]
+                                    elif isinstance(v, str) and v:
+                                        try:
+                                            p = _json.loads(v)
+                                            b[k] = [str(x) for x in p] if isinstance(p, list) and p else [""]
+                                        except Exception:
+                                            b[k] = [v]
+                                    else:
+                                        b[k] = [""]
+                                elif dominant == "int":
+                                    b[k] = int(v) if v not in (None, "") else 0
+                                elif dominant == "bool":
+                                    b[k] = bool(v) if v is not None else False
+                                else:
+                                    if v is None:
+                                        b[k] = ""
+                                    elif isinstance(v, list):
+                                        b[k] = _json.dumps(v)
+                                    elif not isinstance(v, str):
+                                        b[k] = str(v)
+
+                    # Combined CREATE symbol + CONTAINS in one query
+                    for i in range(0, len(deduped), batch_size):
+                        chunk = deduped[i:i + batch_size]
+                        session.run(
+                            f"UNWIND $batch AS row "
+                            f"MATCH (f:File {{path: row._fp}}) "
+                            f"CREATE (n:{label} {{name: row.name, path: row._fp, line_number: row.line_number}}) "
+                            f"SET n += row "
+                            f"CREATE (f)-[:CONTAINS]->(n)",
+                            batch=chunk,
+                        )
+
+                if on_progress:
+                    on_progress(total * 3 // 4, total, "Fast writing relationships...")
+
+                # 5. Parameters — combined CREATE
+                if params_batch:
+                    for i in range(0, len(params_batch), batch_size):
+                        session.run(
+                            "UNWIND $batch AS row "
+                            "MATCH (fn:Function {name: row.func_name, path: row.file_path, line_number: row.line_number}) "
+                            "CREATE (p:Parameter {name: row.arg_name, path: row.file_path, function_line_number: row.line_number}) "
+                            "CREATE (fn)-[:HAS_PARAMETER]->(p)",
+                            batch=params_batch[i:i + batch_size],
+                        )
+
+                # 6. Class→function CONTAINS
+                if class_fn_batch:
+                    for i in range(0, len(class_fn_batch), batch_size):
+                        session.run(
+                            "UNWIND $batch AS row "
+                            "MATCH (c:Class {name: row.class_name, path: row.file_path}) "
+                            "MATCH (fn:Function {name: row.func_name, path: row.file_path, line_number: row.func_line}) "
+                            "CREATE (c)-[:CONTAINS]->(fn)",
+                            batch=class_fn_batch[i:i + batch_size],
+                        )
+
+                # 7. Nested functions
+                if nested_fn_batch:
+                    for i in range(0, len(nested_fn_batch), batch_size):
+                        session.run(
+                            "UNWIND $batch AS row "
+                            "MATCH (outer:Function {name: row.outer, path: row.file_path}) "
+                            "MATCH (inner:Function {name: row.inner_name, path: row.file_path, line_number: row.inner_line}) "
+                            "CREATE (outer)-[:CONTAINS]->(inner)",
+                            batch=nested_fn_batch[i:i + batch_size],
+                        )
+
+                # 8. JS imports — combined MODULE CREATE + IMPORTS
+                if js_imports_batch:
+                    # Deduplicate modules
+                    module_set = set()
+                    module_list = []
+                    for imp in js_imports_batch:
+                        mn = imp["module_name"]
+                        if mn not in module_set:
+                            module_set.add(mn)
+                            module_list.append({"name": mn})
+                    for i in range(0, len(module_list), batch_size):
+                        session.run(
+                            "UNWIND $batch AS row "
+                            "MERGE (m:Module {name: row.name})",
+                            batch=module_list[i:i + batch_size],
+                        )
+                    for i in range(0, len(js_imports_batch), batch_size):
+                        session.run(
+                            "UNWIND $batch AS row "
+                            "MATCH (f:File {path: row.file_path}) "
+                            "MATCH (m:Module {name: row.module_name}) "
+                            "CREATE (f)-[:IMPORTS {imported_name: row.imported_name, alias: row.alias, line_number: row.line_number}]->(m)",
+                            batch=js_imports_batch[i:i + batch_size],
+                        )
+
+                # 9. Other imports
+                if other_imports_batch:
+                    module_set2 = set()
+                    module_list2 = []
+                    for imp in other_imports_batch:
+                        mn = imp["name"]
+                        if mn not in module_set2:
+                            module_set2.add(mn)
+                            module_list2.append({"name": mn, "alias": imp.get("alias", ""), "full_import_name": imp.get("full_import_name", "")})
+                    for i in range(0, len(module_list2), batch_size):
+                        session.run(
+                            "UNWIND $batch AS row "
+                            "MERGE (m:Module {name: row.name}) "
+                            "SET m.alias = row.alias, m.full_import_name = coalesce(row.full_import_name, m.full_import_name)",
+                            batch=module_list2[i:i + batch_size],
+                        )
+                    for i in range(0, len(other_imports_batch), batch_size):
+                        session.run(
+                            "UNWIND $batch AS row "
+                            "MATCH (f:File {path: row.file_path}) "
+                            "MATCH (m:Module {name: row.name}) "
+                            "CREATE (f)-[:IMPORTS {line_number: row.line_number, alias: row.alias}]->(m)",
+                            batch=other_imports_batch[i:i + batch_size],
+                        )
+
+            if on_progress:
+                on_progress(total, total, "Fast graph write complete")
+
+            return len(file_batch)
+
+        except Exception as e:
+            info_logger(f"[FAST WRITE] Failed ({e}), falling back to MERGE writer")
+            return self.add_files_batch_to_graph(
+                all_file_data, repo_name, imports_map, repo_path_str, on_progress
+            )
+
+    # ── Fast CALLS writer using CREATE ───────────────────────────────────
+
+    def write_function_call_groups_fast(
+        self,
+        fn_to_fn: List[Dict],
+        fn_to_cls: List[Dict],
+        cls_to_fn: List[Dict],
+        cls_to_cls: List[Dict],
+        file_to_fn: List[Dict],
+        file_to_cls: List[Dict],
+    ) -> None:
+        """Write CALLS edges using CREATE instead of MERGE (for initial index)."""
+        batch_size = 2000
+        q_fn_to_fn = """
+            UNWIND $batch AS row
+            MATCH (caller:Function {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
+            MATCH (called:Function {name: row.called_name, path: row.called_file_path})
+            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+        """
+        q_fn_to_cls = """
+            UNWIND $batch AS row
+            MATCH (caller:Function {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
+            MATCH (called:Class {name: row.called_name, path: row.called_file_path})
+            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+        """
+        q_cls_to_fn = """
+            UNWIND $batch AS row
+            MATCH (caller:Class {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
+            MATCH (called:Function {name: row.called_name, path: row.called_file_path})
+            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+        """
+        q_cls_to_cls = """
+            UNWIND $batch AS row
+            MATCH (caller:Class {name: row.caller_name, path: row.caller_file_path, line_number: row.caller_line_number})
+            MATCH (called:Class {name: row.called_name, path: row.called_file_path})
+            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+        """
+        q_file_to_fn = """
+            UNWIND $batch AS row
+            MATCH (caller:File {path: row.caller_file_path})
+            MATCH (called:Function {name: row.called_name, path: row.called_file_path})
+            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+        """
+        q_file_to_cls = """
+            UNWIND $batch AS row
+            MATCH (caller:File {path: row.caller_file_path})
+            MATCH (called:Class {name: row.called_name, path: row.called_file_path})
+            CREATE (caller)-[:CALLS {line_number: row.line_number, args: row.args, full_call_name: row.full_call_name}]->(called)
+        """
+        groups: List[Tuple[str, List[Dict], str]] = [
+            ("fn→fn", fn_to_fn, q_fn_to_fn),
+            ("fn→cls", fn_to_cls, q_fn_to_cls),
+            ("cls→fn", cls_to_fn, q_cls_to_fn),
+            ("cls→cls", cls_to_cls, q_cls_to_cls),
+            ("file→fn", file_to_fn, q_file_to_fn),
+            ("file→cls", file_to_cls, q_file_to_cls),
+        ]
+        try:
+            with self.driver.session() as session:
+                for label, calls, query in groups:
+                    if not calls:
+                        continue
+                    t0 = time.time()
+                    for i in range(0, len(calls), batch_size):
+                        session.run(query, batch=calls[i:i + batch_size])
+                    elapsed = time.time() - t0
+                    info_logger(f"[CALLS-FAST] {label}: {len(calls)} in {elapsed:.1f}s")
+        except Exception as e:
+            info_logger(f"[CALLS-FAST] Failed ({e}), falling back to MERGE writer")
+            self.write_function_call_groups(
+                fn_to_fn, fn_to_cls, cls_to_fn, cls_to_cls, file_to_fn, file_to_cls
+            )
+
     def add_minimal_file_node(
         self, file_path: Path, repo_path: Path, is_dependency: bool = False
     ) -> None:
