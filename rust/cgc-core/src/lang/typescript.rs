@@ -1089,4 +1089,109 @@ function complex(x: number): void {
         assert_eq!(funcs.len(), 1);
         assert!(funcs[0].cyclomatic_complexity >= 4);
     }
+
+    #[test]
+    fn test_nested_function_calls_context() {
+        // Simulates a Next.js page component with nested arrow functions
+        // like EmployeesPage → loadCvs → get()
+        let code = r#"
+export default function EmployeesPage() {
+    const router = useRouter();
+    const { user } = useAuth();
+
+    const handleSearchChange = (e: any) => {
+        const results = get("/api/search");
+        setResults(results);
+    };
+
+    const loadCvs = async () => {
+        const res = await get("/api/cvs");
+        setCvs(res.data);
+    };
+
+    const handleSubmit = function() {
+        post("/api/submit", data);
+    };
+
+    fetchData("/api/init");
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = TypeScriptExtractor;
+        let calls = ext.find_calls(&tree.root_node(), &source);
+
+        // Calls inside handleSearchChange should have context = "handleSearchChange"
+        let search_get = calls.iter().find(|c| c.name == "get" && c.line_number == 7).unwrap();
+        assert_eq!(
+            search_get.context.0,
+            Some("handleSearchChange".to_string()),
+            "get() inside handleSearchChange should have context = handleSearchChange, got {:?}",
+            search_get.context.0
+        );
+
+        // Calls inside loadCvs should have context = "loadCvs"
+        let cvs_get = calls.iter().find(|c| c.name == "get" && c.line_number == 12).unwrap();
+        assert_eq!(
+            cvs_get.context.0,
+            Some("loadCvs".to_string()),
+            "get() inside loadCvs should have context = loadCvs, got {:?}",
+            cvs_get.context.0
+        );
+
+        // Calls inside handleSubmit (function_expression) should have context = "handleSubmit"
+        let submit_post = calls.iter().find(|c| c.name == "post").unwrap();
+        assert_eq!(
+            submit_post.context.0,
+            Some("handleSubmit".to_string()),
+            "post() inside handleSubmit should have context = handleSubmit, got {:?}",
+            submit_post.context.0
+        );
+
+        // Calls directly inside EmployeesPage should have context = "EmployeesPage"
+        let init_fetch = calls.iter().find(|c| c.name == "fetchData").unwrap();
+        assert_eq!(
+            init_fetch.context.0,
+            Some("EmployeesPage".to_string()),
+            "fetchData() inside EmployeesPage should have context = EmployeesPage, got {:?}",
+            init_fetch.context.0
+        );
+
+        // useAuth/useRouter should have context = "EmployeesPage" (direct children)
+        let auth = calls.iter().find(|c| c.name == "useAuth").unwrap();
+        assert_eq!(auth.context.0, Some("EmployeesPage".to_string()));
+    }
+
+    #[test]
+    fn test_nested_arrow_in_object() {
+        // Arrow function as object property value
+        let code = r#"
+const handlers = {
+    onClick: () => {
+        doSomething();
+    },
+    onSubmit: function() {
+        submitForm();
+    }
+};
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = TypeScriptExtractor;
+        let calls = ext.find_calls(&tree.root_node(), &source);
+
+        let do_call = calls.iter().find(|c| c.name == "doSomething").unwrap();
+        assert_eq!(
+            do_call.context.0,
+            Some("onClick".to_string()),
+            "doSomething() inside onClick should have context = onClick, got {:?}",
+            do_call.context.0
+        );
+
+        let submit_call = calls.iter().find(|c| c.name == "submitForm").unwrap();
+        assert_eq!(
+            submit_call.context.0,
+            Some("onSubmit".to_string()),
+            "submitForm() inside onSubmit should have context = onSubmit, got {:?}",
+            submit_call.context.0
+        );
+    }
 }

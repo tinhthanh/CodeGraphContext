@@ -115,9 +115,34 @@ pub fn get_parent_context(
     let mut curr = node.parent();
     while let Some(parent) = curr {
         if types.contains(&parent.kind()) {
-            let name = parent
+            let mut name = parent
                 .child_by_field_name("name")
                 .map(|n| get_node_text(&n, source).to_string());
+
+            // For arrow_function / function_expression without a name field,
+            // look up to the parent variable_declarator or assignment for the name.
+            // e.g., `const loadCvs = async () => { get() }` → name = "loadCvs"
+            if name.is_none()
+                && (parent.kind() == "arrow_function"
+                    || parent.kind() == "function_expression")
+            {
+                if let Some(grandparent) = parent.parent() {
+                    if grandparent.kind() == "variable_declarator" {
+                        name = grandparent
+                            .child_by_field_name("name")
+                            .map(|n| get_node_text(&n, source).to_string());
+                    } else if grandparent.kind() == "assignment_expression" {
+                        name = grandparent
+                            .child_by_field_name("left")
+                            .map(|n| get_node_text(&n, source).to_string());
+                    } else if grandparent.kind() == "pair" {
+                        name = grandparent
+                            .child_by_field_name("key")
+                            .map(|n| get_node_text(&n, source).to_string());
+                    }
+                }
+            }
+
             let kind = Some(parent.kind().to_string());
             let line = Some(parent.start_position().row + 1);
             return (name, kind, line);
