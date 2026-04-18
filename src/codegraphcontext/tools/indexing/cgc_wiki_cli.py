@@ -394,35 +394,35 @@ def _install_pretool_hook(settings_path: Path):
 
 
 parser = argparse.ArgumentParser(
-        description="CGC Wiki — Index codebase + generate docs",
-        epilog="Examples:\n"
-               "  cgc-wiki index .              Index current directory\n"
-               "  cgc-wiki install               Install AI skill + hooks\n"
-               "  cgc-wiki hook install           Auto-rebuild on git commit\n"
-               "  cgc-wiki report .              Show graph report\n"
-               "  cgc-wiki query . 'login'       Search symbols\n",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    sub = parser.add_subparsers(dest="command")
+    description="CGC Wiki — Index codebase + generate docs",
+    epilog="Examples:\n"
+           "  cgc-wiki index .              Index current directory\n"
+           "  cgc-wiki install               Install AI skill + hooks\n"
+           "  cgc-wiki hook install           Auto-rebuild on git commit\n"
+           "  cgc-wiki report .              Show graph report\n"
+           "  cgc-wiki query . 'login'       Search symbols\n",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+)
+sub = parser.add_subparsers(dest="command")
 
-    p_index = sub.add_parser("index", help="Index a codebase")
-    p_index.add_argument("path", help="Repository path")
-    p_index.add_argument("--output", help="Output directory (default: <repo>/.cgc-index)")
+p_index = sub.add_parser("index", help="Index a codebase")
+p_index.add_argument("path", help="Repository path")
+p_index.add_argument("--output", help="Output directory (default: <repo>/.cgc-index)")
 
-    p_install = sub.add_parser("install", help="Install AI skill + hooks")
-    p_install.add_argument("--platform", choices=["claude", "cursor", "codex", "generic"],
-                           help="Target platform (auto-detected if omitted)")
+p_install = sub.add_parser("install", help="Install AI skill + hooks")
+p_install.add_argument("--platform", choices=["claude", "cursor", "codex", "generic"],
+                       help="Target platform (auto-detected if omitted)")
 
-    p_hook = sub.add_parser("hook", help="Install/uninstall git hooks")
-    p_hook.add_argument("action", choices=["install", "uninstall"])
-    p_hook.add_argument("path", nargs="?", default=".", help="Repository path")
+p_hook = sub.add_parser("hook", help="Install/uninstall git hooks")
+p_hook.add_argument("action", choices=["install", "uninstall"])
+p_hook.add_argument("path", nargs="?", default=".", help="Repository path")
 
-    p_report = sub.add_parser("report", help="Show graph report")
-    p_report.add_argument("path", help="Repository path")
+p_report = sub.add_parser("report", help="Show graph report")
+p_report.add_argument("path", help="Repository path")
 
-    p_query = sub.add_parser("query", help="Search symbols")
-    p_query.add_argument("path", help="Repository path")
-    p_query.add_argument("query", help="Search term")
+p_query = sub.add_parser("query", help="Search symbols")
+p_query.add_argument("path", help="Repository path")
+p_query.add_argument("query", help="Search term")
 
 
 def main():
