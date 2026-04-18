@@ -236,6 +236,59 @@ def extract_routes(
             except OSError:
                 pass
 
+        # ── NestJS decorator-based routes (source scan) ──
+        if lang in ("typescript", "javascript") and os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                    source_lines = fh.readlines()
+
+                # Check if this is a NestJS controller
+                is_nestjs = any("@Controller" in line for line in source_lines)
+                if is_nestjs:
+                    # Find controller prefix
+                    ctrl_prefix = ""
+                    for line in source_lines:
+                        cm = re.search(r"@Controller\s*\(\s*['\"]([^'\"]+)['\"]", line)
+                        if cm:
+                            ctrl_prefix = "/" + cm.group(1).strip("/")
+                            break
+
+                    # Find route decorators
+                    nestjs_re = re.compile(
+                        r"@(Get|Post|Put|Delete|Patch)\s*\(\s*(?:['\"]([^'\"]*)['\"])?\s*\)"
+                    )
+                    for i, line in enumerate(source_lines):
+                        nm = nestjs_re.search(line)
+                        if nm:
+                            method = nm.group(1).upper()
+                            path_suffix = nm.group(2) or ""
+                            path = ctrl_prefix
+                            if path_suffix:
+                                path = ctrl_prefix + "/" + path_suffix.strip("/")
+                            if not path:
+                                path = "/"
+
+                            # Find handler: next function
+                            handler = ""
+                            for fn in file_data.get("functions", []):
+                                if fn.get("line_number", 0) >= i + 1:
+                                    handler = fn.get("name", "")
+                                    break
+
+                            key = f"{method}|{path}"
+                            if key not in seen:
+                                seen.add(key)
+                                routes.append({
+                                    "method": method,
+                                    "path": path,
+                                    "handler": handler,
+                                    "file": rel_path,
+                                    "line": i + 1,
+                                    "framework": "nestjs",
+                                })
+            except OSError:
+                pass
+
         # ── Call-based routes (scan function calls) ──
         for call in file_data.get("function_calls", []):
             call_name = call.get("full_name", "") or call.get("name", "")
