@@ -1,6 +1,9 @@
 """Shared constants for the indexing pipeline."""
 
 DEFAULT_IGNORE_PATTERNS = [
+    # OS metadata
+    "__MACOSX/",
+    ".DS_Store",
     # Dependency / build directories
     "node_modules/",
     "venv/",
