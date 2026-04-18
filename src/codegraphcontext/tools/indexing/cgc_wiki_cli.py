@@ -124,6 +124,20 @@ def cmd_index(args):
     _generate_report(writer, db_path, repo_path, report_path, counts, flows, routes, rationales)
     print(f"  Report:          {report_path}")
 
+    # Generate module contexts for AI IDE wiki generation
+    from codegraphcontext.tools.indexing.module_grouping import auto_group_modules
+    from codegraphcontext.tools.indexing.context_generator import generate_module_contexts
+
+    modules = auto_group_modules(valid, repo_path)
+    ctx_dir = os.path.join(output_dir, "module_contexts")
+    n_ctx = generate_module_contexts(
+        modules, valid, repo_path, ctx_dir,
+        call_groups=call_groups, routes=routes, flows=flows, rationales=rationales,
+    )
+    print(f"  Modules:         {len(modules)} ({n_ctx} context files)")
+    print(f"  Context dir:     {ctx_dir}")
+    print(f"\n  → AI IDE: read module_contexts/ + type /wiki to generate docs")
+
 
 def _generate_report(writer, db_path, repo_path, report_path, counts, flows, routes, rationales):
     """Generate GRAPH_REPORT.md (like Graphify)."""

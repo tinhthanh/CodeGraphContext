@@ -1,237 +1,97 @@
 # /wiki — Generate Code Documentation Wiki
 
-Generate comprehensive wiki documentation for this codebase using the CGC knowledge graph.
-**Zero LLM API cost** — uses your IDE's built-in AI (Claude Code, Cursor, Copilot).
+Generate comprehensive wiki documentation using pre-computed module contexts.
+**Zero LLM API cost** — uses your IDE's built-in AI.
 
 ## When to use
 
-- User types `/wiki` or asks "generate wiki", "document this codebase", "create docs"
-- After running `cgc-wiki index .` (or if `.cgc-index/` already exists)
+User types `/wiki` or asks "generate wiki", "document this codebase", "create docs"
 
 ## Prerequisites
 
-If `.cgc-index/graph.duckdb` doesn't exist yet:
-
+If `.cgc-index/module_contexts/` doesn't exist, run first:
 ```bash
-pip install codegraphcontext-rust duckdb
-python /path/to/CodeGraphContext/scripts/cgc-wiki.py index .
+cgc-wiki index .
 ```
 
-## Step 1: Read the Graph Report
+## Step 1: Read the index
 
-Read `.cgc-index/GRAPH_REPORT.md` to understand:
-- **God Nodes** — most connected functions/classes (architecture hubs)
-- **API Routes** — full endpoint surface
-- **Execution Flows** — what happens when key functions are called
-- **Design Rationale** — WHY/NOTE/HACK comments from developers
+Read `.cgc-index/module_contexts/index.md` to see all modules.
 
-## Step 2: Query the Graph for Module Details
+## Step 2: Generate docs for each module
 
-For each major area (based on god nodes + routes), query DuckDB:
+For each module listed in index.md:
 
-```python
-import duckdb
-db = duckdb.connect('.cgc-index/graph.duckdb', read_only=True)
+1. Read `.cgc-index/module_contexts/{slug}.md`
+2. The file contains ALL context needed: functions, classes, routes, flows, rationale, source code
+3. Follow the "Instructions for AI Wiki Generator" at the bottom of each file
+4. Write the doc to `wiki-output/{slug}.md`
 
-# Top functions by connections
-top = db.execute("""
-    SELECT called_name, called_path, count(*) as cnt
-    FROM calls WHERE called_type = 'Function'
-    GROUP BY called_name, called_path
-    ORDER BY cnt DESC LIMIT 20
-""").fetchall()
+**Important:** Process modules ONE AT A TIME. Read context → generate doc → move to next.
 
-# All API routes
-routes = db.execute("SELECT method, path, handler, file, framework FROM routes ORDER BY path").fetchall()
+## Step 3: Generate overview
 
-# Execution flows for a specific file
-flows = db.execute("""
-    SELECT name, step_count, depth, steps_json
-    FROM execution_flows
-    WHERE entry_file LIKE '%auth%'
-    ORDER BY score DESC LIMIT 5
-""").fetchall()
+After all modules are done, generate `wiki-output/overview.md`:
 
-# Functions in a file
-funcs = db.execute("""
-    SELECT name, line_number, complexity, class_context, docstring
-    FROM functions WHERE path LIKE '%auth.service%'
-    ORDER BY line_number
-""").fetchall()
+1. Read `.cgc-index/GRAPH_REPORT.md` for god nodes + summary
+2. List all modules with brief descriptions
+3. Include a Mermaid architecture diagram
+4. Link to each module doc using `[Module Name](module-slug.md)`
 
-# Call graph for a file
-calls = db.execute("""
-    SELECT DISTINCT caller_name, called_name, called_path, confidence
-    FROM calls
-    WHERE caller_path LIKE '%auth.service%'
-      AND caller_type = 'Function'
-""").fetchall()
-
-# Design rationale
-rationales = db.execute("SELECT tag, text, file, line, context FROM rationales").fetchall()
-
-# Classes with methods
-classes = db.execute("""
-    SELECT class_context, count(*) as methods
-    FROM functions
-    WHERE class_context != ''
-    GROUP BY class_context
-    ORDER BY methods DESC LIMIT 20
-""").fetchall()
-
-db.close()
-```
-
-## Step 3: Generate Wiki Documents
-
-For each module/area, write a markdown doc following this structure:
-
-```markdown
----
-title: "{Module Name}"
-type: code-docs
-generated_at: {timestamp}
----
-
-# {Module Name}
-
-## Overview
-{1-2 paragraph summary of what this module does and why it exists}
-
-## Architecture
-{Describe key classes/functions and how they relate}
-
-```mermaid
-graph LR
-    A[Component] --> B[Service]
-    B --> C[Repository]
-```
-
-## API Endpoints
-{Table of routes handled by this module}
-
-| Method | Path | Handler | Description |
-|--------|------|---------|-------------|
-| POST | /auth/login | login() | Authenticate user |
-
-## Key Functions
-
-### {functionName}
-- **File:** `path/to/file.ts:42`
-- **Calls:** fn1, fn2, fn3 (EXTRACTED)
-- **Called by:** handler1, handler2 (INFERRED — cross-file)
-- **Complexity:** {N}
-
-{What this function does, based on its calls and context}
-
-## Execution Flows
-
-### Login Flow
-When a user logs in:
-1. `login()` validates credentials
-2. → `generateToken()` creates JWT
-3. → `saveSession()` persists to Redis
-4. → returns token to client
-
-{Derived from execution_flows table}
-
-## Design Decisions
-{From rationale comments in source code}
-
-- **[SAFETY]** in `demoteSuperAdmin`: at least 1 super admin must remain
-- **[DECISION]** in `computeTrustScore`: mock location → apply penalty but skip GPS weight
-
-## Dependencies
-{What this module depends on (outgoing calls) and what depends on it (incoming calls)}
-```
-
-## Step 4: Create Overview Page
-
-Write `overview.md` that links all module docs:
-
-```markdown
-# {Project Name} — Code Wiki
-
-## Project Summary
-{High-level description based on god nodes + routes + flows}
-
-## Modules
-| Module | Files | Functions | Key Purpose |
-|--------|-------|-----------|-------------|
-| [Authentication](authentication.md) | 5 | 23 | Login, JWT, sessions |
-| [API Layer](api-layer.md) | 12 | 45 | REST endpoints |
-
-## API Surface
-{Summary of all routes by area}
-
-## Architecture Diagram
-```mermaid
-graph TB
-    subgraph Frontend
-        A[Pages] --> B[Services]
-    end
-    subgraph Backend
-        C[Controllers] --> D[Services]
-        D --> E[Repository]
-    end
-    B --> C
-```
-```
-
-## Step 5: Output
-
-Write all docs to `wiki-output/` (or directory specified by user):
+## Output structure
 
 ```
 wiki-output/
-├── overview.md
-├── authentication.md
-├── api-layer.md
-├── data-layer.md
-├── ...
-└── design-decisions.md
+├── overview.md              # Project overview + architecture
+├── authentication.md        # Module doc
+├── api-layer.md            # Module doc
+├── data-layer.md           # Module doc
+└── ...
 ```
 
-## Tips for High Quality
+## Quality guidelines
 
-1. **Use confidence tags** — When describing call relationships:
-   - EXTRACTED edges are certain (found in AST)
-   - INFERRED edges are cross-file resolutions (likely but not guaranteed)
+- Each module doc should have: Overview, Architecture (Mermaid), Key Functions, API Endpoints, Execution Flows, Design Decisions
+- Use confidence tags: EXTRACTED = certain, INFERRED = cross-file
+- Include design rationale (NOTE/WHY/HACK comments) — these explain "why"
+- Show execution flows step-by-step — most valuable for onboarding
+- Link between modules using `[[module-slug]]` wikilinks
 
-2. **Include rationale** — Design comments (`NOTE:`, `WHY:`, `HACK:`) are the most
-   valuable information for docs. Always include them.
+## Example output
 
-3. **Show execution flows** — "What happens when X is called" is the #1 question
-   new developers ask. Trace the flow step by step.
+For a module context with 4 NestJS routes and 3 execution flows, generate:
 
-4. **Link API routes to handlers** — Show which functions handle which endpoints.
+```markdown
+# Authentication Module
 
-5. **Use Mermaid diagrams** — Architecture + flow diagrams make docs 3x more useful.
+## Overview
+Handles user authentication via JWT tokens with session management.
 
-6. **Don't list everything** — Focus on god nodes (top 20 connected) and key flows.
-   Skip trivial getter/setter functions.
-
-## Example: /wiki for NestJS project
-
+## Architecture
+```mermaid
+graph LR
+    A[AuthController] --> B[AuthService]
+    B --> C[JwtService]
+    B --> D[SessionService]
+    D --> E[Redis]
 ```
-User: /wiki
-AI: I'll generate wiki documentation for smart-attendance.
 
-Reading .cgc-index/GRAPH_REPORT.md...
-- 423 functions, 214 classes
-- 35 API routes (NestJS)
-- 161 execution flows
-- Key areas: auth, attendance, branches, employees, dashboard
+## API Endpoints
+| Method | Path | Handler | Description |
+|--------|------|---------|-------------|
+| POST | /auth/login | login | Authenticate with credentials |
+| POST | /auth/refresh | refresh | Refresh JWT token |
 
-Generating docs:
-1. overview.md ✓
-2. authentication.md ✓ (4 routes: login, logout, refresh, me)
-3. attendance.md ✓ (3 routes: check-in, check-out, me)
-4. branches.md ✓ (9 routes: CRUD + geofences + wifi)
-5. employees.md ✓ (6 routes: CRUD + devices + assignments)
-6. dashboard.md ✓ (3 routes: admin, anomalies, manager)
-7. reports.md ✓ (3 routes: export + download)
-8. design-decisions.md ✓ (1 rationale: trust score)
+## How It Works
 
-Wiki generated: 8 documents in wiki-output/
+### Login Flow
+When a user calls POST /auth/login:
+1. AuthController.login() receives LoginDto
+2. AuthService.validateCredentials() checks password
+3. JwtService.generateToken() creates JWT
+4. SessionService.saveSession() persists to Redis
+5. Returns LoginResponse with token
+
+## Design Decisions
+- **[SAFETY]** At least 1 super admin must remain in the system
 ```
