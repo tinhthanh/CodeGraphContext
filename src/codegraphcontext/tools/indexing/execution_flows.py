@@ -211,6 +211,39 @@ def detect_execution_flows(
     candidates.sort(key=lambda x: -x[0])
     candidates = candidates[:max_flows * 2]  # over-fetch, will filter
 
+    # Noise function names to skip during BFS (not interesting for flow tracing)
+    noise_names: Set[str] = {
+        # Java/generic
+        "ok", "of", "build", "builder", "toString", "hashCode", "equals",
+        "get", "set", "put", "add", "remove", "contains", "size", "isEmpty",
+        "valueOf", "values", "name", "ordinal", "compareTo",
+        "matcher", "matches", "group", "find", "pattern",
+        "append", "format", "trim", "split", "join", "replace",
+        "parseInt", "parseFloat", "parseLong", "parseDouble",
+        "asList", "singletonList", "emptyList", "emptyMap",
+        "HashMap<>", "ArrayList<>", "HashSet<>", "LinkedList<>",
+        "Optional", "ofNullable", "orElse", "orElseThrow", "isPresent",
+        "stream", "map", "filter", "collect", "forEach", "reduce", "flatMap",
+        "toList", "toSet", "toMap", "joining",
+        # JS/TS generic
+        "then", "catch", "finally", "resolve", "reject",
+        "push", "pop", "shift", "slice", "splice", "concat",
+        "keys", "entries", "assign", "freeze", "create",
+        "log", "warn", "error", "info", "debug",
+        "JSON", "stringify", "parse",
+        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+        "Promise", "async", "await",
+        "require", "module", "exports",
+        "console", "document", "window",
+        # React
+        "useState", "useEffect", "useRef", "useCallback", "useMemo",
+        "useContext", "useReducer",
+        "preventDefault", "stopPropagation",
+        # Python
+        "print", "len", "range", "str", "int", "float", "bool", "list", "dict",
+        "super", "self", "cls",
+    }
+
     # BFS from each entry point
     flows: List[Dict[str, Any]] = []
     seen_flows: Set[str] = set()  # avoid duplicate flows
@@ -239,23 +272,29 @@ def detect_execution_flows(
             if depth > max_depth:
                 continue
 
+            # Skip noise names from steps (keep entry point even if noisy)
+            if depth > 0 and name in noise_names:
+                continue
+
             steps.append({
                 "name": name,
                 "file": path,
-                "line": 0,  # line from adjacency
+                "line": 0,
                 "depth": depth,
             })
 
-            # Follow outgoing calls
+            # Follow outgoing calls (skip noise)
             key = f"{name}|{path}"
             for callee_name, callee_path, callee_line in adj.get(key, []):
+                if callee_name in noise_names:
+                    continue
                 callee_key = f"{callee_name}|{callee_path}"
                 if callee_key not in visited:
                     visited.add(callee_key)
                     queue.append((callee_name, callee_path, depth + 1))
 
-        # Skip trivial flows (1-2 steps)
-        if len(steps) < 2:
+        # Skip trivial flows (< 3 meaningful steps)
+        if len(steps) < 3:
             continue
 
         # Deduplicate by first 3 steps
