@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "codegraphcontext-rust"
-version = "0.7.0"
+version = "0.7.1"
 description = "Rust-accelerated code indexing engine for CodeGraphContext. 19 languages, 5-18x faster parsing via tree-sitter + rayon."
 authors = [
     { name = "Shashank Shekhar Singh", email = "shashankshekharsingh1205@gmail.com" },
@@ -70,6 +70,7 @@ dev = [
 [project.scripts]
 cgc = "codegraphcontext.cli.main:app"
 codegraphcontext = "codegraphcontext.cli.main:app"
+cgc-wiki = "codegraphcontext.tools.indexing.cgc_wiki_cli:main"
 
 [tool.maturin]
 manifest-path = "rust/cgc-python/Cargo.toml"
