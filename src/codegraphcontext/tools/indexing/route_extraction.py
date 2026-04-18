@@ -187,17 +187,79 @@ def extract_routes(
                             })
                         break
 
+        # ── Java/Kotlin annotation-based routes (source scan fallback) ──
+        # Rust parser doesn't extract Java annotations as decorators,
+        # so scan source lines for @GetMapping, @PostMapping, etc.
+        if lang in ("java", "kotlin") and os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                    source_lines = fh.readlines()
+
+                # Find class-level @RequestMapping prefix
+                class_prefix = ""
+                for line in source_lines:
+                    rm = re.search(r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?["\']([^"\']+)["\']', line)
+                    if rm:
+                        class_prefix = rm.group(1).rstrip("/")
+                        break
+
+                # Find method-level mappings
+                annotation_re = re.compile(
+                    r'@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?["\']([^"\']+)["\']'
+                )
+                for i, line in enumerate(source_lines):
+                    am = annotation_re.search(line)
+                    if am:
+                        method = am.group(1).upper()
+                        path = class_prefix + am.group(2)
+                        if not path.startswith("/"):
+                            path = "/" + path
+
+                        # Find handler: next function after this annotation
+                        handler = ""
+                        for fn in file_data.get("functions", []):
+                            if fn.get("line_number", 0) > i + 1:
+                                handler = fn.get("name", "")
+                                break
+
+                        key = f"{method}|{path}"
+                        if key not in seen:
+                            seen.add(key)
+                            routes.append({
+                                "method": method,
+                                "path": path,
+                                "handler": handler,
+                                "file": rel_path,
+                                "line": i + 1,
+                                "framework": "spring",
+                            })
+            except OSError:
+                pass
+
         # ── Call-based routes (scan function calls) ──
         for call in file_data.get("function_calls", []):
             call_name = call.get("full_name", "") or call.get("name", "")
+
+            # Skip false positive patterns (db.get, request.get, etc.)
+            if any(call_name.startswith(prefix) for prefix in (
+                "db.", "session.", "request.", "response.", "res.", "req.",
+                "self.", "this.", "super.", "cls.", "console.", "logger.",
+                "Math.", "JSON.", "Object.", "Array.", "String.",
+                "os.", "sys.", "path.", "fs.",
+            )):
+                continue
+
             for pattern in _CALL_ROUTE_PATTERNS:
                 m = pattern.search(call_name)
                 if not m:
                     # Also check args for path string
                     args = call.get("args", [])
                     if args:
-                        combined = " ".join(str(a) for a in args[:2])
-                        m = pattern.search(f'{call_name}({combined})')
+                        first_arg = str(args[0]).strip('"\'')
+                        # Only match if first arg looks like a URL path
+                        if first_arg.startswith("/") or first_arg.startswith("api/"):
+                            combined = " ".join(str(a) for a in args[:2])
+                            m = pattern.search(f'{call_name}({combined})')
                 if m:
                     groups = m.groups()
                     if len(groups) == 2:
@@ -207,15 +269,29 @@ def extract_routes(
                         method = "ANY"
                         path = groups[0]
 
-                    # Determine framework
+                    # Validate path looks like URL (not variable name)
+                    if not path.startswith("/") and not path.startswith("api"):
+                        continue
+
+                    # Determine framework by language
                     if "HandleFunc" in call_name or lang == "go":
                         framework = "go"
                     elif "Route::" in call_name:
                         framework = "laravel"
                     elif "path(" in call_name:
                         framework = "django"
-                    else:
+                    elif lang == "python":
+                        framework = "fastapi"
+                    elif lang in ("typescript", "javascript", "tsx"):
                         framework = "express"
+                    elif lang == "java":
+                        framework = "spring"
+                    elif lang == "php":
+                        framework = "laravel"
+                    elif lang == "ruby":
+                        framework = "rails"
+                    else:
+                        framework = "unknown"
 
                     handler = call.get("context", ("",))[0] if isinstance(call.get("context"), tuple) else ""
                     if not handler:
