@@ -111,6 +111,10 @@ class DuckDBGraphWriter:
             entry_class VARCHAR DEFAULT '', step_count INTEGER DEFAULT 0,
             depth INTEGER DEFAULT 0, score INTEGER DEFAULT 0,
             steps_json VARCHAR DEFAULT '[]')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS routes (
+            method VARCHAR, path VARCHAR, handler VARCHAR,
+            file VARCHAR, line INTEGER DEFAULT 0,
+            framework VARCHAR DEFAULT '')""")
         self._schema_created = True
 
     # ── Main write method ────────────────────────────────────────────
@@ -352,7 +356,7 @@ class DuckDBGraphWriter:
         c = self._conn
 
         # Drop existing data
-        for tbl in ["execution_flows", "calls", "inheritance", "file_contains",
+        for tbl in ["routes", "execution_flows", "calls", "inheritance", "file_contains",
                      "imports", "parameters", "variables", "classes", "functions",
                      "directories", "files", "modules", "repository"]:
             c.execute(f"DROP TABLE IF EXISTS {tbl}")
@@ -421,6 +425,21 @@ class DuckDBGraphWriter:
             logger.debug("Execution flow detection failed: %s", exc)
             flows = []
 
+        # ── Detect API routes ────────────────────────────────────
+        detected_routes = []
+        try:
+            from ..route_extraction import extract_routes
+            detected_routes = extract_routes(parsed_results, repo_path)
+            if detected_routes:
+                c.executemany(
+                    "INSERT INTO routes VALUES (?,?,?,?,?,?)",
+                    [(r["method"], r["path"], r["handler"],
+                      r["file"], r["line"], r["framework"])
+                     for r in detected_routes],
+                )
+        except Exception as exc:
+            logger.debug("Route extraction failed: %s", exc)
+
         # Cleanup temp parquet
         import shutil
         shutil.rmtree(pq_dir, ignore_errors=True)
@@ -441,6 +460,7 @@ class DuckDBGraphWriter:
             "modules": len(mod_set),
             "inheritance": len(inh_child),
             "execution_flows": len(flows),
+            "routes": len(detected_routes),
             "elapsed_s": round(elapsed, 2),
         }
         logger.info(f"DuckDB write complete: {counts}")
@@ -563,6 +583,21 @@ class DuckDBGraphWriter:
             {"type": r[0], "name": r[1], "path": r[2], "line_number": r[3]}
             for r in rows
         ]
+
+    def get_routes(self, limit: int = 100) -> List[Dict]:
+        """Get detected API routes."""
+        try:
+            rows = self._conn.execute("""
+                SELECT method, path, handler, file, line, framework
+                FROM routes ORDER BY path, method LIMIT ?
+            """, [limit]).fetchall()
+            return [
+                {"method": r[0], "path": r[1], "handler": r[2],
+                 "file": r[3], "line": r[4], "framework": r[5]}
+                for r in rows
+            ]
+        except Exception:
+            return []
 
     def get_execution_flows(self, limit: int = 50) -> List[Dict]:
         """Get top execution flows by score."""

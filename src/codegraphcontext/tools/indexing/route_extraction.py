@@ -1,0 +1,240 @@
+"""Detect API routes/endpoints from parsed source code.
+
+Supports:
+- Express.js/Hono: app.get("/path", handler), router.post(...)
+- FastAPI/Flask: @app.get("/path"), @app.route("/path")
+- Spring Boot: @GetMapping("/path"), @PostMapping, @RequestMapping
+- Next.js: file-based routing (page.tsx → route)
+- Django: path("url/", view), urlpatterns
+- NestJS: @Get(), @Post(), @Controller("/prefix")
+- Laravel: Route::get("/path", [Controller, "method"])
+- Go: http.HandleFunc("/path", handler), r.GET("/path", handler)
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+# ── Route patterns per framework ────────────────────────────────────
+
+# Decorator-based routes (Python, Java, NestJS)
+_DECORATOR_ROUTE_PATTERNS = [
+    # FastAPI / Flask
+    re.compile(r'@(?:app|router|api)\.(get|post|put|delete|patch|options|head)\s*\(\s*["\']([^"\']+)["\']'),
+    re.compile(r'@(?:app|router|api)\.route\s*\(\s*["\']([^"\']+)["\']'),
+    # Spring Boot
+    re.compile(r'@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?["\']([^"\']+)["\']'),
+    re.compile(r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?["\']([^"\']+)["\']'),
+    # NestJS
+    re.compile(r'@(Get|Post|Put|Delete|Patch)\s*\(\s*["\']([^"\']+)["\']'),
+    re.compile(r'@Controller\s*\(\s*["\']([^"\']+)["\']'),
+]
+
+# Function call-based routes (Express, Hono, Go)
+_CALL_ROUTE_PATTERNS = [
+    # Express.js / Hono
+    re.compile(r'(?:app|router|server|api)\.(get|post|put|delete|patch|use|all)\s*\(\s*["\']([^"\']+)["\']'),
+    # Go net/http
+    re.compile(r'(?:http\.)?HandleFunc\s*\(\s*["\']([^"\']+)["\']'),
+    # Go gin/echo/chi
+    re.compile(r'(?:r|router|e|g)\.(GET|POST|PUT|DELETE|PATCH)\s*\(\s*["\']([^"\']+)["\']'),
+    # Laravel
+    re.compile(r'Route::(get|post|put|delete|patch)\s*\(\s*["\']([^"\']+)["\']'),
+    # Django
+    re.compile(r'path\s*\(\s*["\']([^"\']+)["\']'),
+]
+
+# Next.js / Nuxt file-based routing patterns
+_NEXTJS_ROUTE_FILES = {"page.tsx", "page.ts", "page.jsx", "page.js", "route.tsx", "route.ts"}
+_NEXTJS_ROUTE_GROUPS = re.compile(r'\(([^)]+)\)')  # strip (group) from path
+
+
+def _extract_nextjs_route(file_path: str, repo_path: str) -> Optional[str]:
+    """Convert Next.js file path to route path."""
+    try:
+        rel = os.path.relpath(file_path, repo_path)
+    except ValueError:
+        return None
+
+    parts = Path(rel).parts
+    # Find "app" directory
+    try:
+        app_idx = list(parts).index("app")
+    except ValueError:
+        return None
+
+    route_parts = []
+    for part in parts[app_idx + 1:-1]:  # skip "app" and filename
+        # Strip route groups like (dashboard), (auth)
+        if part.startswith("(") and part.endswith(")"):
+            continue
+        # Convert [param] to :param
+        if part.startswith("[") and part.endswith("]"):
+            param = part[1:-1]
+            if param.startswith("..."):
+                route_parts.append(f"*{param[3:]}")
+            else:
+                route_parts.append(f":{param}")
+        else:
+            route_parts.append(part)
+
+    return "/" + "/".join(route_parts) if route_parts else "/"
+
+
+def extract_routes(
+    parsed_results: List[Dict[str, Any]],
+    repo_path: str,
+) -> List[Dict[str, Any]]:
+    """Extract API routes from parsed source files.
+
+    Returns list of:
+        {
+            method: str (GET, POST, etc.),
+            path: str ("/api/users/:id"),
+            handler: str (function name),
+            file: str (relative path),
+            line: int,
+            framework: str ("express", "fastapi", "spring", "nextjs", etc.),
+        }
+    """
+    routes: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    for file_data in parsed_results:
+        if "error" in file_data:
+            continue
+
+        file_path = file_data.get("path", "")
+        file_name = Path(file_path).name
+        lang = file_data.get("lang", "")
+
+        try:
+            rel_path = os.path.relpath(file_path, repo_path)
+        except ValueError:
+            rel_path = file_name
+
+        # ── Next.js file-based routing ──
+        if file_name in _NEXTJS_ROUTE_FILES:
+            route = _extract_nextjs_route(file_path, repo_path)
+            if route is not None:
+                # Find the main exported function
+                handler = ""
+                for fn in file_data.get("functions", []):
+                    name = fn.get("name", "")
+                    if name and name[0].isupper():  # Capitalized = component
+                        handler = name
+                        break
+                if not handler:
+                    fns = file_data.get("functions", [])
+                    handler = fns[0]["name"] if fns else file_name
+
+                key = f"GET|{route}"
+                if key not in seen:
+                    seen.add(key)
+                    routes.append({
+                        "method": "GET",
+                        "path": route,
+                        "handler": handler,
+                        "file": rel_path,
+                        "line": 0,
+                        "framework": "nextjs",
+                    })
+
+        # ── Decorator-based routes (read from decorators on functions) ──
+        for fn in file_data.get("functions", []):
+            decorators = fn.get("decorators", []) or []
+            for dec in decorators:
+                dec_str = str(dec)
+                for pattern in _DECORATOR_ROUTE_PATTERNS:
+                    m = pattern.search(dec_str)
+                    if m:
+                        groups = m.groups()
+                        if len(groups) == 2:
+                            method = groups[0].upper()
+                            path = groups[1]
+                        else:
+                            method = "ANY"
+                            path = groups[0]
+
+                        # Normalize method
+                        method_map = {"GET": "GET", "POST": "POST", "PUT": "PUT",
+                                      "DELETE": "DELETE", "PATCH": "PATCH",
+                                      "GETMAPPING": "GET", "POSTMAPPING": "POST",
+                                      "PUTMAPPING": "PUT", "DELETEMAPPING": "DELETE",
+                                      "PATCHMAPPING": "PATCH"}
+                        method = method_map.get(method.upper().replace("MAPPING", "MAPPING"), method)
+
+                        framework = "spring" if "Mapping" in dec_str else \
+                                    "fastapi" if lang == "python" else \
+                                    "nestjs" if lang in ("typescript", "javascript") else "unknown"
+
+                        key = f"{method}|{path}"
+                        if key not in seen:
+                            seen.add(key)
+                            routes.append({
+                                "method": method,
+                                "path": path,
+                                "handler": fn.get("name", ""),
+                                "file": rel_path,
+                                "line": fn.get("line_number", 0),
+                                "framework": framework,
+                            })
+                        break
+
+        # ── Call-based routes (scan function calls) ──
+        for call in file_data.get("function_calls", []):
+            call_name = call.get("full_name", "") or call.get("name", "")
+            for pattern in _CALL_ROUTE_PATTERNS:
+                m = pattern.search(call_name)
+                if not m:
+                    # Also check args for path string
+                    args = call.get("args", [])
+                    if args:
+                        combined = " ".join(str(a) for a in args[:2])
+                        m = pattern.search(f'{call_name}({combined})')
+                if m:
+                    groups = m.groups()
+                    if len(groups) == 2:
+                        method = groups[0].upper()
+                        path = groups[1]
+                    else:
+                        method = "ANY"
+                        path = groups[0]
+
+                    # Determine framework
+                    if "HandleFunc" in call_name or lang == "go":
+                        framework = "go"
+                    elif "Route::" in call_name:
+                        framework = "laravel"
+                    elif "path(" in call_name:
+                        framework = "django"
+                    else:
+                        framework = "express"
+
+                    handler = call.get("context", ("",))[0] if isinstance(call.get("context"), tuple) else ""
+                    if not handler:
+                        handler = call.get("name", "")
+
+                    key = f"{method}|{path}"
+                    if key not in seen:
+                        seen.add(key)
+                        routes.append({
+                            "method": method,
+                            "path": path,
+                            "handler": handler or "",
+                            "file": rel_path,
+                            "line": call.get("line_number", 0),
+                            "framework": framework,
+                        })
+                    break
+
+    # Sort by path
+    routes.sort(key=lambda r: (r["path"], r["method"]))
+    logger.info("Detected %d API routes", len(routes))
+    return routes
