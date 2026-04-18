@@ -106,6 +106,11 @@ class DuckDBGraphWriter:
             child_path VARCHAR DEFAULT '', parent_path VARCHAR DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS file_contains (
             file_path VARCHAR, symbol_uid VARCHAR, symbol_type VARCHAR)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS execution_flows (
+            name VARCHAR, entry_file VARCHAR, entry_line INTEGER DEFAULT 0,
+            entry_class VARCHAR DEFAULT '', step_count INTEGER DEFAULT 0,
+            depth INTEGER DEFAULT 0, score INTEGER DEFAULT 0,
+            steps_json VARCHAR DEFAULT '[]')""")
         self._schema_created = True
 
     # ── Main write method ────────────────────────────────────────────
@@ -396,6 +401,26 @@ class DuckDBGraphWriter:
         c.execute("CREATE INDEX IF NOT EXISTS idx_fc_uid ON file_contains(symbol_uid)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_imp_file ON imports(file_path)")
 
+        # ── Detect execution flows ────────────────────────────────
+        try:
+            from ..execution_flows import detect_execution_flows
+            import json as _json
+            flows = detect_execution_flows(parsed_results, call_groups)
+            if flows:
+                flow_rows = [
+                    (f["name"], f["entry_file"], f["entry_line"],
+                     f.get("entry_class", ""), f["step_count"],
+                     f["depth"], f["score"], _json.dumps(f["steps"]))
+                    for f in flows
+                ]
+                c.executemany(
+                    "INSERT INTO execution_flows VALUES (?,?,?,?,?,?,?,?)",
+                    flow_rows,
+                )
+        except Exception as exc:
+            logger.debug("Execution flow detection failed: %s", exc)
+            flows = []
+
         # Cleanup temp parquet
         import shutil
         shutil.rmtree(pq_dir, ignore_errors=True)
@@ -415,6 +440,7 @@ class DuckDBGraphWriter:
             "imports": len(im_fp),
             "modules": len(mod_set),
             "inheritance": len(inh_child),
+            "execution_flows": len(flows),
             "elapsed_s": round(elapsed, 2),
         }
         logger.info(f"DuckDB write complete: {counts}")
@@ -537,6 +563,28 @@ class DuckDBGraphWriter:
             {"type": r[0], "name": r[1], "path": r[2], "line_number": r[3]}
             for r in rows
         ]
+
+    def get_execution_flows(self, limit: int = 50) -> List[Dict]:
+        """Get top execution flows by score."""
+        import json
+        try:
+            rows = self._conn.execute("""
+                SELECT name, entry_file, entry_line, entry_class,
+                       step_count, depth, score, steps_json
+                FROM execution_flows
+                ORDER BY score DESC, step_count DESC
+                LIMIT ?
+            """, [limit]).fetchall()
+            return [
+                {
+                    "name": r[0], "entry_file": r[1], "entry_line": r[2],
+                    "entry_class": r[3], "step_count": r[4], "depth": r[5],
+                    "score": r[6], "steps": json.loads(r[7]),
+                }
+                for r in rows
+            ]
+        except Exception:
+            return []
 
     def execute(self, query: str, params=None):
         """Raw query execution for advanced use."""
