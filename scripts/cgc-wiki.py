@@ -212,13 +212,211 @@ def cmd_query(args):
         print(f"  [{r['type']}] {r['name']} ({r['path']}:{r['line_number']})")
 
 
+def cmd_install(args):
+    """Install CGC-Wiki skill + hooks for AI coding assistants."""
+    platform = args.platform or _detect_platform()
+    home = Path.home()
+    skill_src = Path(__file__).parent.parent / ".claude" / "skills" / "wiki-gen" / "SKILL.md"
+
+    print(f"Installing CGC-Wiki for: {platform}")
+
+    if platform == "claude":
+        # 1. Copy skill
+        skill_dir = home / ".claude" / "skills" / "cgc-wiki"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        if skill_src.exists():
+            (skill_dir / "SKILL.md").write_text(skill_src.read_text())
+            print(f"  Skill → {skill_dir / 'SKILL.md'}")
+
+        # 2. Add to CLAUDE.md
+        claude_md = Path(".") / "CLAUDE.md"
+        section = _claude_md_section()
+        if claude_md.exists():
+            content = claude_md.read_text()
+            if "cgc-wiki" not in content:
+                claude_md.write_text(content + "\n\n" + section)
+                print(f"  CLAUDE.md updated")
+            else:
+                print(f"  CLAUDE.md already has cgc-wiki section")
+        else:
+            claude_md.write_text(section)
+            print(f"  CLAUDE.md created")
+
+        # 3. Install PreToolUse hook
+        settings_path = home / ".claude" / "settings.json"
+        _install_pretool_hook(settings_path)
+        print(f"  PreToolUse hook → {settings_path}")
+
+    elif platform == "cursor":
+        rules_dir = Path(".") / ".cursor" / "rules"
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        rule_file = rules_dir / "cgc-wiki.mdc"
+        rule_file.write_text(_cursor_rule())
+        print(f"  Rule → {rule_file}")
+
+    elif platform == "codex":
+        agents_md = Path(".") / "AGENTS.md"
+        section = _agents_md_section()
+        if agents_md.exists():
+            content = agents_md.read_text()
+            if "cgc-wiki" not in content:
+                agents_md.write_text(content + "\n\n" + section)
+        else:
+            agents_md.write_text(section)
+        print(f"  AGENTS.md updated")
+
+    else:
+        # Generic: write AGENTS.md
+        agents_md = Path(".") / "AGENTS.md"
+        section = _agents_md_section()
+        if agents_md.exists():
+            content = agents_md.read_text()
+            if "cgc-wiki" not in content:
+                agents_md.write_text(content + "\n\n" + section)
+        else:
+            agents_md.write_text(section)
+        print(f"  AGENTS.md updated")
+
+    print(f"\nDone! Now run: cgc-wiki index .")
+    print(f"Then type /wiki in your AI assistant to generate docs.")
+
+
+def cmd_hook(args):
+    """Install/uninstall git hooks for auto-rebuild."""
+    repo_path = Path(args.path or ".").resolve()
+    git_dir = repo_path / ".git"
+    if not git_dir.exists():
+        print(f"Not a git repo: {repo_path}")
+        return
+
+    hooks_dir = git_dir / "hooks"
+    hooks_dir.mkdir(exist_ok=True)
+    hook_file = hooks_dir / "post-commit"
+
+    if args.action == "install":
+        script = f"""#!/bin/sh
+# CGC-Wiki: auto-rebuild index after commit (AST only, no LLM cost)
+if [ -d ".cgc-index" ]; then
+    echo "[cgc-wiki] Rebuilding index..."
+    python {Path(__file__).resolve()} index . 2>/dev/null &
+fi
+"""
+        hook_file.write_text(script)
+        hook_file.chmod(0o755)
+        print(f"Post-commit hook installed: {hook_file}")
+        print("Index will auto-rebuild after each commit (background, no LLM cost)")
+
+    elif args.action == "uninstall":
+        if hook_file.exists():
+            content = hook_file.read_text()
+            if "cgc-wiki" in content:
+                hook_file.unlink()
+                print(f"Hook removed: {hook_file}")
+            else:
+                print("Hook exists but not from cgc-wiki — skipping")
+        else:
+            print("No hook found")
+
+
+def _detect_platform() -> str:
+    """Auto-detect which AI coding platform is installed."""
+    home = Path.home()
+    if (home / ".claude").exists():
+        return "claude"
+    if (home / ".cursor").exists() or Path(".cursor").exists():
+        return "cursor"
+    if (home / ".codex").exists():
+        return "codex"
+    return "generic"
+
+
+def _claude_md_section() -> str:
+    return """## cgc-wiki
+This project has a CGC knowledge graph at `.cgc-index/`.
+Rules:
+- Before answering architecture or codebase questions, read `.cgc-index/GRAPH_REPORT.md`
+- Use the graph data (god nodes, routes, flows) instead of grepping raw files
+- After modifying code, run `cgc-wiki index .` to keep the graph current
+- Type `/wiki` to generate wiki documentation from the graph
+"""
+
+
+def _agents_md_section() -> str:
+    return """## cgc-wiki
+This project has a CGC knowledge graph at `.cgc-index/`.
+Rules:
+- Before answering architecture questions, read `.cgc-index/GRAPH_REPORT.md`
+- The report contains: god nodes, API routes, execution flows, design rationale
+- After modifying code, run `python cgc-wiki.py index .` to rebuild
+"""
+
+
+def _cursor_rule() -> str:
+    return """---
+description: CGC-Wiki code intelligence
+alwaysApply: true
+---
+
+This project has a CGC knowledge graph at `.cgc-index/`.
+
+Before answering architecture or codebase questions:
+1. Read `.cgc-index/GRAPH_REPORT.md` for god nodes, routes, flows
+2. Use the graph structure instead of grepping raw files
+3. Type `/wiki` to generate wiki documentation
+"""
+
+
+def _install_pretool_hook(settings_path: Path):
+    """Add PreToolUse hook to Claude Code settings."""
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    settings = {}
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    hooks = settings.setdefault("hooks", {})
+    pre_tool = hooks.setdefault("PreToolUse", [])
+
+    # Check if already installed
+    for hook in pre_tool:
+        if "cgc-wiki" in str(hook.get("command", "")):
+            return  # already installed
+
+    pre_tool.append({
+        "matcher": "Glob|Grep|Read",
+        "command": 'test -f .cgc-index/GRAPH_REPORT.md && echo "cgc-wiki: Knowledge graph exists at .cgc-index/. Read GRAPH_REPORT.md for god nodes, API routes, and execution flows before searching raw files." || true',
+    })
+
+    settings_path.write_text(json.dumps(settings, indent=2))
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CGC Wiki — Index codebase + generate docs")
+    parser = argparse.ArgumentParser(
+        description="CGC Wiki — Index codebase + generate docs",
+        epilog="Examples:\n"
+               "  cgc-wiki index .              Index current directory\n"
+               "  cgc-wiki install               Install AI skill + hooks\n"
+               "  cgc-wiki hook install           Auto-rebuild on git commit\n"
+               "  cgc-wiki report .              Show graph report\n"
+               "  cgc-wiki query . 'login'       Search symbols\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command")
 
     p_index = sub.add_parser("index", help="Index a codebase")
     p_index.add_argument("path", help="Repository path")
     p_index.add_argument("--output", help="Output directory (default: <repo>/.cgc-index)")
+
+    p_install = sub.add_parser("install", help="Install AI skill + hooks")
+    p_install.add_argument("--platform", choices=["claude", "cursor", "codex", "generic"],
+                           help="Target platform (auto-detected if omitted)")
+
+    p_hook = sub.add_parser("hook", help="Install/uninstall git hooks")
+    p_hook.add_argument("action", choices=["install", "uninstall"])
+    p_hook.add_argument("path", nargs="?", default=".", help="Repository path")
 
     p_report = sub.add_parser("report", help="Show graph report")
     p_report.add_argument("path", help="Repository path")
@@ -230,6 +428,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.command == "index":
         cmd_index(args)
+    elif args.command == "install":
+        cmd_install(args)
+    elif args.command == "hook":
+        cmd_hook(args)
     elif args.command == "report":
         cmd_report(args)
     elif args.command == "query":
