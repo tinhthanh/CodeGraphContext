@@ -352,8 +352,8 @@ class DuckDBGraphWriter:
         c = self._conn
 
         # Drop existing data
-        for tbl in ["calls", "inheritance", "file_contains", "imports",
-                     "parameters", "variables", "classes", "functions",
+        for tbl in ["execution_flows", "calls", "inheritance", "file_contains",
+                     "imports", "parameters", "variables", "classes", "functions",
                      "directories", "files", "modules", "repository"]:
             c.execute(f"DROP TABLE IF EXISTS {tbl}")
         self._schema_created = False
