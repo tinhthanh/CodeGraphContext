@@ -99,7 +99,8 @@ class DuckDBGraphWriter:
             caller_type VARCHAR, called_type VARCHAR,
             caller_name VARCHAR DEFAULT '', called_name VARCHAR DEFAULT '',
             caller_path VARCHAR DEFAULT '', called_path VARCHAR DEFAULT '',
-            line_number INTEGER DEFAULT 0, full_call_name VARCHAR DEFAULT '')""")
+            line_number INTEGER DEFAULT 0, full_call_name VARCHAR DEFAULT '',
+            confidence VARCHAR DEFAULT 'EXTRACTED')""")
         c.execute("""CREATE TABLE IF NOT EXISTS inheritance (
             child_uid VARCHAR, parent_uid VARCHAR,
             child_name VARCHAR DEFAULT '', parent_name VARCHAR DEFAULT '',
@@ -111,6 +112,9 @@ class DuckDBGraphWriter:
             entry_class VARCHAR DEFAULT '', step_count INTEGER DEFAULT 0,
             depth INTEGER DEFAULT 0, score INTEGER DEFAULT 0,
             steps_json VARCHAR DEFAULT '[]')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS rationales (
+            tag VARCHAR, text VARCHAR, file VARCHAR,
+            line INTEGER DEFAULT 0, context VARCHAR DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS routes (
             method VARCHAR, path VARCHAR, handler VARCHAR,
             file VARCHAR, line INTEGER DEFAULT 0,
@@ -257,7 +261,7 @@ class DuckDBGraphWriter:
         # ── CALLS edges ──────────────────────────────────────────────
         c_caller = []; c_called = []; c_ct = []; c_cdt = []
         c_cn = []; c_dn = []; c_cp = []; c_dp = []
-        c_ln = []; c_fcn = []
+        c_ln = []; c_fcn = []; c_conf = []
         edge_labels = [
             ("Function", "Function"), ("Function", "Class"),
             ("Class", "Function"), ("Class", "Class"),
@@ -272,8 +276,12 @@ class DuckDBGraphWriter:
                 duid = f"{e.get('called_name', '')}|{e.get('called_file_path', '')}|0"
                 c_caller.append(cuid); c_called.append(duid); c_ct.append(ct); c_cdt.append(cdt)
                 c_cn.append(e.get("caller_name", "")); c_dn.append(e.get("called_name", ""))
-                c_cp.append(e.get("caller_file_path", "")); c_dp.append(e.get("called_file_path", ""))
+                caller_path = e.get("caller_file_path", "")
+                called_path = e.get("called_file_path", "")
+                c_cp.append(caller_path); c_dp.append(called_path)
                 c_ln.append(e.get("line_number", 0)); c_fcn.append(e.get("full_call_name", ""))
+                # Confidence: EXTRACTED if same file, INFERRED if cross-file
+                c_conf.append("EXTRACTED" if caller_path == called_path else "INFERRED")
 
         # ── Inheritance ──────────────────────────────────────────────
         inh_child = []; inh_parent = []; inh_cn = []; inh_pn = []; inh_cp = []; inh_pp = []
@@ -340,6 +348,7 @@ class DuckDBGraphWriter:
             "caller_name": c_cn, "called_name": c_dn,
             "caller_path": c_cp, "called_path": c_dp,
             "line_number": c_ln, "full_call_name": c_fcn,
+            "confidence": c_conf,
         }), f"{pq_dir}/calls.parquet")
 
         if inh_child:
@@ -356,7 +365,7 @@ class DuckDBGraphWriter:
         c = self._conn
 
         # Drop existing data
-        for tbl in ["routes", "execution_flows", "calls", "inheritance", "file_contains",
+        for tbl in ["rationales", "routes", "execution_flows", "calls", "inheritance", "file_contains",
                      "imports", "parameters", "variables", "classes", "functions",
                      "directories", "files", "modules", "repository"]:
             c.execute(f"DROP TABLE IF EXISTS {tbl}")
@@ -440,6 +449,20 @@ class DuckDBGraphWriter:
         except Exception as exc:
             logger.debug("Route extraction failed: %s", exc)
 
+        # ── Extract design rationale comments ─────────────────────
+        detected_rationales = []
+        try:
+            from ..rationale_extraction import extract_rationales
+            detected_rationales = extract_rationales(parsed_results, repo_path)
+            if detected_rationales:
+                c.executemany(
+                    "INSERT INTO rationales VALUES (?,?,?,?,?)",
+                    [(r["tag"], r["text"], r["file"], r["line"], r["context"])
+                     for r in detected_rationales],
+                )
+        except Exception as exc:
+            logger.debug("Rationale extraction failed: %s", exc)
+
         # Cleanup temp parquet
         import shutil
         shutil.rmtree(pq_dir, ignore_errors=True)
@@ -461,6 +484,7 @@ class DuckDBGraphWriter:
             "inheritance": len(inh_child),
             "execution_flows": len(flows),
             "routes": len(detected_routes),
+            "rationales": len(detected_rationales),
             "elapsed_s": round(elapsed, 2),
         }
         logger.info(f"DuckDB write complete: {counts}")
