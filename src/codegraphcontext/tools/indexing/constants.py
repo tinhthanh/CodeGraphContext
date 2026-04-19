@@ -4,6 +4,10 @@ DEFAULT_IGNORE_PATTERNS = [
     # OS metadata
     "__MACOSX/",
     ".DS_Store",
+    # CGC / wiki output
+    ".cgc-index/",
+    ".wiki-tmp/",
+    "wiki-output/",
     # Dependency / build directories
     "node_modules/",
     "venv/",

@@ -225,6 +225,20 @@ def detect_execution_flows(
         "Optional", "ofNullable", "orElse", "orElseThrow", "isPresent",
         "stream", "map", "filter", "collect", "forEach", "reduce", "flatMap",
         "toList", "toSet", "toMap", "joining",
+        # Jackson / JSON
+        "asText", "asLong", "asInt", "asBoolean", "isMissingNode", "isArray",
+        "path", "readTree", "readValue", "writeValueAsString",
+        "jsonPath", "contentType", "content",
+        # Java time / lang
+        "currentTimeMillis", "nanoTime", "now", "toInstant", "atZone",
+        "getTime", "toLocalDate", "format",
+        # Java accessors (common getters)
+        "getId", "getName", "getStatus", "getType", "getValue",
+        "getCode", "getMessage", "getPath", "getClass",
+        "setId", "setName", "setStatus", "setType",
+        # BigDecimal / AtomicReference
+        "BigDecimal", "AtomicReference", "AtomicInteger", "AtomicLong",
+        "ZERO", "ONE", "TEN", "compareTo", "multiply", "divide",
         # JS/TS generic
         "then", "catch", "finally", "resolve", "reject",
         "push", "pop", "shift", "slice", "splice", "concat",

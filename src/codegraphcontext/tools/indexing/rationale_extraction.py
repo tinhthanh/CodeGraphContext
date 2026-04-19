@@ -90,11 +90,23 @@ def extract_rationales(
                         tag = m.group(1).upper()
                         text = m.group(2).strip()
 
-                        # Decode unicode escapes (e.g., \u0111\u00e3 → đã)
-                        try:
-                            text = text.encode("utf-8").decode("unicode_escape").encode("latin-1").decode("utf-8")
-                        except (UnicodeDecodeError, UnicodeEncodeError):
-                            pass  # keep original if decode fails
+                        # Decode unicode escapes:
+                        # 1. \u0111\u00e3 (with backslash) → đã
+                        # 2. u0111u00e3 (literal, no backslash) → đã
+                        if "\\u" in text:
+                            try:
+                                text = text.encode("utf-8").decode("unicode_escape").encode("latin-1").decode("utf-8")
+                            except (UnicodeDecodeError, UnicodeEncodeError):
+                                pass
+                        elif re.search(r'(?<![a-zA-Z])u[0-9a-fA-F]{4}', text):
+                            try:
+                                text = re.sub(
+                                    r'(?<![a-zA-Z])u([0-9a-fA-F]{4})',
+                                    lambda m: chr(int(m.group(1), 16)),
+                                    text,
+                                )
+                            except (ValueError, OverflowError):
+                                pass
 
                         # Skip very short or empty rationales
                         if len(text) < 5:

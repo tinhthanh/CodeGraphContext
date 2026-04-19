@@ -193,12 +193,12 @@ class DuckDBGraphWriter:
 
             lang = r.get("lang", "")
 
-            # Functions
+            # Functions — store relative path for consistency with routes/rationales
             for fn in r.get("functions", []):
                 uid = f"{fn.get('name', '')}|{fp}|{fn.get('line_number', 0)}"
                 if uid not in func_set:
                     func_set.add(uid)
-                    fn_uid.append(uid); fn_name.append(fn.get("name", "")); fn_path.append(fp)
+                    fn_uid.append(uid); fn_name.append(fn.get("name", "")); fn_path.append(rel)
                     fn_line.append(fn.get("line_number", 0))
                     fn_cx.append(fn.get("complexity", 0) or 0)
                     fn_rt.append(fn.get("return_type", "") or "")
@@ -207,7 +207,7 @@ class DuckDBGraphWriter:
                     fn_async.append(fn.get("is_async", False) or False)
                     fn_bstart.append(fn.get("body_start_line", 0) or 0)
                     fn_bend.append(fn.get("body_end_line", 0) or 0)
-                    fc_fp.append(fp); fc_uid.append(uid); fc_type.append("Function")
+                    fc_fp.append(rel); fc_uid.append(uid); fc_type.append("Function")
 
                     # Parameters
                     for arg in fn.get("args", []) or []:
@@ -217,7 +217,7 @@ class DuckDBGraphWriter:
                             if puid not in param_set:
                                 param_set.add(puid)
                                 p_uid.append(puid); p_name.append(arg_name)
-                                p_path.append(fp); p_func_uid.append(uid)
+                                p_path.append(rel); p_func_uid.append(uid)
                                 p_func_line.append(fn.get("line_number", 0))
 
             # Classes
@@ -226,11 +226,11 @@ class DuckDBGraphWriter:
                 if uid not in class_set:
                     class_set.add(uid)
                     cl_uid.append(uid); cl_name.append(cls.get("name", ""))
-                    cl_path.append(fp); cl_line.append(cls.get("line_number", 0))
+                    cl_path.append(rel); cl_line.append(cls.get("line_number", 0))
                     cl_doc.append(cls.get("docstring", "") or "")
                     bases = cls.get("bases", [])
                     cl_bases.append(",".join(str(b) for b in bases) if bases else "")
-                    fc_fp.append(fp); fc_uid.append(uid); fc_type.append("Class")
+                    fc_fp.append(rel); fc_uid.append(uid); fc_type.append("Class")
 
             # Variables
             for var in r.get("variables", []):
@@ -238,9 +238,9 @@ class DuckDBGraphWriter:
                 if uid not in var_set:
                     var_set.add(uid)
                     v_uid.append(uid); v_name.append(var.get("name", ""))
-                    v_path.append(fp); v_line.append(var.get("line_number", 0))
+                    v_path.append(rel); v_line.append(var.get("line_number", 0))
                     v_type.append(var.get("type", "") or "")
-                    fc_fp.append(fp); fc_uid.append(uid); fc_type.append("Variable")
+                    fc_fp.append(rel); fc_uid.append(uid); fc_type.append("Variable")
 
             # Imports
             for imp in r.get("imports", []):
@@ -474,13 +474,17 @@ class DuckDBGraphWriter:
             existing = c.execute("SELECT count(*) FROM inheritance").fetchone()[0]
 
             # For each class with bases, create inheritance edges if not exists
+            import re as _re
             added = 0
             for row in c.execute("SELECT uid, name, path, bases FROM classes WHERE bases != ''").fetchall():
                 child_uid, child_name, child_path, bases_str = row
-                # Parse bases: comma-separated, may have generics
-                import re as _re
-                base_names = [b.strip().split("<")[0].strip()
-                              for b in _re.split(r"[,;]", bases_str) if b.strip()]
+                # Strip ALL generic type params first: BaseCrudService<A, B, C> → BaseCrudService
+                stripped = _re.sub(r"<[^<>]*>", "", bases_str)
+                # Handle nested generics: Map<String, List<Integer>> → Map
+                while "<" in stripped:
+                    stripped = _re.sub(r"<[^<>]*>", "", stripped)
+                # Now split by comma safely
+                base_names = [b.strip() for b in stripped.split(",") if b.strip()]
                 for base_name in base_names:
                     if base_name in class_map:
                         parent_uid, parent_path = class_map[base_name]

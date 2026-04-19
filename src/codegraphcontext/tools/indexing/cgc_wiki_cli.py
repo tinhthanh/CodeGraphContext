@@ -145,21 +145,43 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
 
     # God-node noise: skip accessors, test DSL, built-ins
     _GOD_NODE_NOISE = {
+        # Java/generic accessors
         "get", "set", "of", "put", "add", "remove", "size", "isEmpty",
         "equals", "hashCode", "toString", "compareTo", "valueOf", "values",
         "build", "builder", "clone", "close", "read", "write",
+        "from", "apply", "accept", "test", "run", "call",
+        # Lombok-style getters/setters
+        "getId", "getName", "getStatus", "getType", "getValue", "getCode",
+        "getCreatedAt", "getUpdatedAt", "getPath", "getMessage",
+        "setId", "setName", "setStatus", "setType", "setValue",
+        # Jackson / JSON
+        "asText", "asLong", "asInt", "asBoolean", "isMissingNode", "isArray",
+        "path", "jsonPath", "readTree", "readValue", "writeValueAsString",
+        # Test DSL (JUnit, MockMvc, Jest)
         "it", "describe", "expect", "toBe", "toEqual", "assert",
         "andExpect", "assertThat", "verify", "mock", "when", "given",
         "mockResolvedValue", "mockReturnValue", "waitForTimeout",
+        "perform", "isOk", "content", "header", "value",
+        # HTTP / response
         "status", "ok", "body", "json", "parse", "stringify",
-        "log", "error", "warn", "info", "debug",
-        "getId", "getName", "getStatus", "getType", "getValue",
-        "setId", "setName", "setStatus", "setType", "setValue",
+        # Logging
+        "log", "error", "warn", "info", "debug", "println", "printf",
+        # Java stdlib
+        "format", "trim", "split", "join", "replace", "contains",
+        "append", "insert", "delete", "substring", "length",
+        "stream", "map", "filter", "collect", "forEach", "reduce",
+        "Optional", "orElse", "orElseThrow", "isPresent", "ifPresent",
+        "currentTimeMillis", "nanoTime", "now",
     }
 
+    import re as _re
+    _ACCESSOR_RE = _re.compile(r"^(get|set|is|has)[A-Z]")
+
     w = DuckDBGraphWriter(db_path)
-    raw_top = w.get_top_connected(limit=30)
-    top = [t for t in raw_top if t.get("name", "") not in _GOD_NODE_NOISE][:10]
+    raw_top = w.get_top_connected(limit=50)
+    top = [t for t in raw_top
+           if t.get("name", "") not in _GOD_NODE_NOISE
+           and not _ACCESSOR_RE.match(t.get("name", ""))][:10]
     stats = w.get_stats()
     w.close()
 
