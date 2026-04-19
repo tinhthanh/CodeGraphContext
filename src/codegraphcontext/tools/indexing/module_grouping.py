@@ -139,31 +139,116 @@ def auto_group_modules(
             logger.info("Detected %d manifest-based modules: %s",
                         len(manifest_modules), list(manifest_modules.keys()))
 
+            # Threshold above which a manifest-based module is sub-split by
+            # the next directory level. Prevents single-NX-app monorepos
+            # (e.g. apps/app with 1000+ files) from collapsing into one giant
+            # module that wiki cannot navigate.
+            _SUBSPLIT_THRESHOLD = max_files_per_module * 3  # e.g. 90
+
+            def _common_prefix_len(file_list: List[str]) -> int:
+                """Length (in path parts) of the common directory prefix of files."""
+                if not file_list:
+                    return 0
+                split_parts = [Path(f).parts[:-1] for f in file_list]  # drop filename
+                n = min(len(p) for p in split_parts)
+                i = 0
+                while i < n and all(p[i] == split_parts[0][i] for p in split_parts):
+                    i += 1
+                return i
+
+            def _subsplit(files: List[str], skip_depth: int, depth: int = 0) -> Dict[str, List[str]]:
+                """Split files by the first non-generic directory beyond skip_depth.
+                Recursively sub-splits groups that are still above threshold (up to
+                depth 3 to prevent explosion). Returns {sub_label -> files}."""
+                groups: Dict[str, List[str]] = defaultdict(list)
+                for f in files:
+                    parts = Path(f).parts
+                    start = skip_depth
+                    sub = None
+                    while start < len(parts) - 1:
+                        candidate = parts[start]
+                        if candidate.lower() in _SKIP_DIR_NAMES or candidate.startswith("."):
+                            start += 1
+                            continue
+                        sub = candidate
+                        break
+                    if not sub:
+                        sub = "(misc)"
+                    groups[sub].append(f)
+
+                # Recursively sub-split oversized groups (stop at depth 3)
+                if depth < 3:
+                    expanded: Dict[str, List[str]] = {}
+                    for k, v in groups.items():
+                        if len(v) > _SUBSPLIT_THRESHOLD and k != "(misc)":
+                            # Find the actual common prefix length for this subgroup
+                            # (could be deeper than the matched `k` if src/app wrappers exist)
+                            subgroup_prefix = _common_prefix_len(v)
+                            deeper = _subsplit(v, subgroup_prefix, depth + 1)
+                            for dk, dv in deeper.items():
+                                label = f"{k}/{dk}" if dk != "(misc)" else k
+                                expanded[label] = dv
+                        else:
+                            expanded[k] = v
+                    groups = expanded
+
+                # Merge tiny sub-groups into (misc)
+                merged: Dict[str, List[str]] = {}
+                misc: List[str] = []
+                for k, v in groups.items():
+                    if len(v) >= min_files_per_module:
+                        merged[k] = v
+                    else:
+                        misc.extend(v)
+                if misc:
+                    merged["(misc)"] = misc
+                return merged
+
             modules = []
             for mod_dir, files in sorted(manifest_modules.items(), key=lambda x: -len(x[1])):
-                # Use module dir name as slug (gateway-api, service-pet, etc.)
-                slug = re.sub(r"[^a-z0-9]+", "-", mod_dir.lower()).strip("-") or "root"
-                name = _humanize_dir(mod_dir.split("/")[0])
+                mod_base = _humanize_dir(mod_dir.split("/")[0])
+                mod_slug_base = re.sub(r"[^a-z0-9]+", "-", mod_dir.lower()).strip("-") or "root"
 
-                lang_counts = Counter()
-                classes = set()
-                for f in files:
-                    data = file_data.get(f, {})
-                    lang = data.get("lang", "")
-                    if lang: lang_counts[lang] += 1
-                    for cls in data.get("classes", []):
-                        classes.add(cls.get("name", ""))
-
-                modules.append({
-                    "name": name,
-                    "slug": slug,
-                    "dir": mod_dir,
-                    "files": sorted(files),
-                    "file_count": len(files),
-                    "primary_lang": lang_counts.most_common(1)[0][0] if lang_counts else "",
-                    "classes": sorted(classes - {""}),
-                    "entry_functions": [],
-                })
+                if len(files) > _SUBSPLIT_THRESHOLD:
+                    sub_groups = _subsplit(files, _common_prefix_len(files))
+                    logger.info("Sub-splitting %s (%d files) into %d sub-modules",
+                                mod_dir, len(files), len(sub_groups))
+                    for sub_name, sub_files in sub_groups.items():
+                        lang_counts = Counter(); classes = set()
+                        for f in sub_files:
+                            data = file_data.get(f, {})
+                            if (lang := data.get("lang", "")): lang_counts[lang] += 1
+                            for cls in data.get("classes", []):
+                                classes.add(cls.get("name", ""))
+                        sub_humanized = _humanize_dir(sub_name.split("/")[-1]) if sub_name != "(misc)" else "(misc)"
+                        sub_slug_tail = re.sub(r"[^a-z0-9]+", "-", sub_name.lower()).strip("-") or "misc"
+                        modules.append({
+                            "name": f"{mod_base} / {sub_humanized}",
+                            "slug": f"{mod_slug_base}-{sub_slug_tail}",
+                            "dir": f"{mod_dir}/{sub_name}" if sub_name != "(misc)" else mod_dir,
+                            "files": sorted(sub_files),
+                            "file_count": len(sub_files),
+                            "primary_lang": lang_counts.most_common(1)[0][0] if lang_counts else "",
+                            "classes": sorted(classes - {""}),
+                            "entry_functions": [],
+                        })
+                else:
+                    lang_counts = Counter(); classes = set()
+                    for f in files:
+                        data = file_data.get(f, {})
+                        if (lang := data.get("lang", "")): lang_counts[lang] += 1
+                        for cls in data.get("classes", []):
+                            classes.add(cls.get("name", ""))
+                    modules.append({
+                        "name": mod_base,
+                        "slug": mod_slug_base,
+                        "dir": mod_dir,
+                        "files": sorted(files),
+                        "file_count": len(files),
+                        "primary_lang": lang_counts.most_common(1)[0][0] if lang_counts else "",
+                        "classes": sorted(classes - {""}),
+                        "entry_functions": [],
+                    })
 
             return modules
 

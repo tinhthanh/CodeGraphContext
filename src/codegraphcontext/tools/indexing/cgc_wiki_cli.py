@@ -214,6 +214,19 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
         "JSON", "BodyParser", "ParamsParser",
         # Go testing extra
         "Parallel", "Cleanup", "Deadline",
+        # Angular reactive forms primitives (leak heavily in form-heavy apps)
+        "FormControl", "FormGroup", "FormArray", "FormBuilder", "Validators",
+        "AbstractControl", "ControlValueAccessor",
+        # Angular testing
+        "TestBed", "inject", "fakeAsync", "tick", "flush", "waitForAsync",
+        "ComponentFixture", "DebugElement",
+        # RxJS ubiquitous primitives
+        "Subject", "BehaviorSubject", "ReplaySubject", "Observable",
+        "of", "from", "pipe", "map", "filter", "tap", "switchMap",
+        "mergeMap", "catchError", "take", "takeUntil", "subscribe",
+        # Ionic common UI
+        "ModalController", "ToastController", "AlertController",
+        "LoadingController", "NavController",
     }
 
     import re as _re

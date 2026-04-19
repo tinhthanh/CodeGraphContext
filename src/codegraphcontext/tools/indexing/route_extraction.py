@@ -468,19 +468,38 @@ def extract_routes(
                     # For decorator-style calls (@router.get, @app.post) the parsed call
                     # name is an HTTP verb — not a real handler. Replace with the function
                     # declared immediately AFTER the decorator line (FastAPI/Flask pattern).
+                    # Exception: Express/Hono/Fiber inline arrow handlers — the handler is
+                    # an anonymous arrow on the same line, NOT a named function below.
                     _HTTP_VERBS = {"get", "post", "put", "delete", "patch", "use", "all",
                                    "options", "head"}
                     if not handler or handler.lower() in _HTTP_VERBS:
                         call_line = call.get("line_number", 0) or 0
-                        best_fn = None
-                        best_dist = 999
-                        for fn in file_data.get("functions", []):
-                            fn_line = fn.get("line_number", 0) or 0
-                            if fn_line > call_line and (fn_line - call_line) < best_dist:
-                                best_dist = fn_line - call_line
-                                best_fn = fn
-                        if best_fn and best_dist <= 5:
-                            handler = best_fn.get("name", "") or handler
+                        # Detect inline arrow/function on the call line itself
+                        is_inline = False
+                        if call_line > 0 and os.path.exists(file_path) and lang in (
+                            "javascript", "typescript", "tsx"
+                        ):
+                            try:
+                                with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                                    src_lines = fh.readlines()
+                                # Look at call_line through call_line+3 (multi-line calls)
+                                window = "".join(src_lines[call_line - 1: call_line + 3])
+                                if re.search(r'=>\s*[{(]|\bfunction\s*\(', window):
+                                    is_inline = True
+                            except OSError:
+                                pass
+                        if is_inline:
+                            handler = "<anonymous>"
+                        else:
+                            best_fn = None
+                            best_dist = 999
+                            for fn in file_data.get("functions", []):
+                                fn_line = fn.get("line_number", 0) or 0
+                                if fn_line > call_line and (fn_line - call_line) < best_dist:
+                                    best_dist = fn_line - call_line
+                                    best_fn = fn
+                            if best_fn and best_dist <= 5:
+                                handler = best_fn.get("name", "") or handler
 
                     key = f"{method}|{path}"
                     if key not in seen:
