@@ -198,6 +198,63 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
         fh.write("\n".join(lines))
 
 
+def cmd_search_index(args):
+    """Build search index from wiki-output/ for AI navigation."""
+    repo_path = str(Path(args.path).resolve())
+    wiki_dir = os.path.join(repo_path, "wiki-output")
+    if not os.path.exists(wiki_dir):
+        print(f"No wiki-output/ found. Generate wiki first: /wiki in AI IDE")
+        return
+
+    cgc_dir = os.path.join(repo_path, ".cgc-index")
+    index_path = os.path.join(cgc_dir, "WIKI_INDEX.md")
+
+    lines = [
+        "# Wiki Search Index",
+        "",
+        "Use this index to find the right wiki document for any question.",
+        "",
+        "| Document | Topics | Key Functions | Routes |",
+        "|----------|--------|---------------|--------|",
+    ]
+
+    for md_file in sorted(Path(wiki_dir).glob("*.md")):
+        name = md_file.stem
+        content = md_file.read_text(encoding="utf-8", errors="replace")
+
+        # Extract topics from headings
+        headings = [line.lstrip("#").strip() for line in content.split("\n")
+                    if line.startswith("#") and len(line) < 80][:5]
+        topics = ", ".join(headings[:3])
+
+        # Extract function names (backtick-wrapped)
+        import re
+        funcs = re.findall(r"`(\w+)\(\)`", content)
+        funcs_str = ", ".join(sorted(set(funcs))[:5])
+
+        # Extract routes
+        routes = re.findall(r"(GET|POST|PUT|DELETE|PATCH)\s+`?(/[^\s`|]+)", content)
+        routes_str = ", ".join(f"{m} {p}" for m, p in routes[:3])
+
+        lines.append(f"| [{name}](wiki-output/{name}.md) | {topics} | {funcs_str} | {routes_str} |")
+
+    lines.extend([
+        "",
+        "## How to use",
+        "",
+        "When answering a question about this codebase:",
+        "1. Search this table for matching topics/functions/routes",
+        "2. Read the matching wiki document(s)",
+        "3. Answer using the wiki content (don't grep raw source)",
+    ])
+
+    os.makedirs(cgc_dir, exist_ok=True)
+    with open(index_path, "w") as fh:
+        fh.write("\n".join(lines))
+    print(f"Search index: {index_path}")
+    print(f"Documents indexed: {len(list(Path(wiki_dir).glob('*.md')))}")
+
+
 def cmd_report(args):
     """Show graph report."""
     repo_path = str(Path(args.path).resolve())
@@ -347,11 +404,17 @@ def _detect_platform() -> str:
 def _claude_md_section() -> str:
     return """## cgc-wiki
 This project has a CGC knowledge graph at `.cgc-index/`.
-Rules:
-- Before answering architecture or codebase questions, read `.cgc-index/GRAPH_REPORT.md`
-- Use the graph data (god nodes, routes, flows) instead of grepping raw files
-- After modifying code, run `cgc-wiki index .` to keep the graph current
-- Type `/wiki` to generate wiki documentation from the graph
+
+### When answering questions about this codebase:
+1. First check if `wiki-output/` exists — if yes, read `wiki-output/overview.md` then search relevant docs
+2. If no wiki, read `.cgc-index/GRAPH_REPORT.md` for god nodes, routes, flows
+3. Use graph data instead of grepping raw files
+
+### Commands:
+- `/wiki` — generate wiki documentation (reads module_contexts/, writes wiki-output/)
+- `cgc-wiki index .` — rebuild index after code changes
+- `cgc-wiki search-index .` — rebuild search index after wiki generation
+- `cgc-wiki query . "search term"` — search symbols in the graph
 """
 
 
@@ -445,6 +508,9 @@ p_query = sub.add_parser("query", help="Search symbols")
 p_query.add_argument("path", help="Repository path")
 p_query.add_argument("query", help="Search term")
 
+p_search = sub.add_parser("search-index", help="Build search index from wiki-output/")
+p_search.add_argument("path", nargs="?", default=".", help="Repository path")
+
 
 def main():
     """Entry point for cgc-wiki CLI."""
@@ -459,6 +525,8 @@ def main():
         cmd_report(args)
     elif args.command == "query":
         cmd_query(args)
+    elif args.command == "search-index":
+        cmd_search_index(args)
     else:
         parser.print_help()
 
