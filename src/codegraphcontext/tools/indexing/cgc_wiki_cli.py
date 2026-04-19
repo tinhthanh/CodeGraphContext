@@ -195,6 +195,25 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
         # SQLAlchemy declarative column/migration noise (Alembic templates)
         "Column", "String", "Integer", "Text", "Boolean", "DateTime",
         "ForeignKey", "Index", "UniqueConstraint", "Table",
+        # Go testing + testify + gomock + stdlib
+        "T", "B", "M", "Helper", "Logf", "Skip", "SkipNow", "FailNow",
+        "Errorf", "Fatalf", "Error", "Fatal", "Log",
+        "NoError", "Equal", "NotEqual", "Nil", "NotNil", "True", "False",
+        "Empty", "NotEmpty", "Len", "Contains", "NotContains",
+        "Greater", "Less", "InDelta", "ElementsMatch", "Subset",
+        "EXPECT", "DoAndReturn", "Return", "Times", "AnyTimes", "Do",
+        "Finish", "NewController", "Call",
+        "Background", "TODO", "WithValue", "WithCancel", "WithTimeout",
+        "Printf", "Println", "Sprintf", "Sprintln", "Errorf",
+        "Make", "Append", "Copy", "Close", "Open", "Read", "Write",
+        "String",  # Go method for stringer
+        # Go logger levels + HTTP response primitives
+        "Info", "Warn", "Debug", "Trace",
+        "WriteString", "SendString", "WriteJSON", "SendStatus",
+        "Next", "Locals", "Param", "Params", "Query", "QueryParser",
+        "JSON", "BodyParser", "ParamsParser",
+        # Go testing extra
+        "Parallel", "Cleanup", "Deadline",
     }
 
     import re as _re

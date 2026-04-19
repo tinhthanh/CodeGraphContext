@@ -36,18 +36,22 @@ _DECORATOR_ROUTE_PATTERNS = [
     re.compile(r'@Controller\s*\(\s*["\']([^"\']+)["\']'),
 ]
 
-# Function call-based routes (Express, Hono, Go)
+# Function call-based routes (Express, Hono, Go Fiber/Gin/Echo/Chi, ...)
+# Generic pattern: <any identifier>.<Verb>("<path starting with />", ...)
+# Works for: app.get / router.Post / translationGroup.Get / r.GET / api.use / etc.
+# Case-insensitive to cover JS (get) + Go (Get/GET) + mixed conventions.
+# Require path arg to start with "/" — reduces false positives like res.get("header").
 _CALL_ROUTE_PATTERNS = [
-    # Express.js / Hono
-    re.compile(r'(?:app|router|server|api)\.(get|post|put|delete|patch|use|all)\s*\(\s*["\']([^"\']+)["\']'),
+    re.compile(
+        r'\b[\w.]+\.(get|post|put|delete|patch|head|options|use|all)\s*\(\s*["\'](\/[^"\']*)["\']',
+        re.IGNORECASE,
+    ),
     # Go net/http
-    re.compile(r'(?:http\.)?HandleFunc\s*\(\s*["\']([^"\']+)["\']'),
-    # Go gin/echo/chi
-    re.compile(r'(?:r|router|e|g)\.(GET|POST|PUT|DELETE|PATCH)\s*\(\s*["\']([^"\']+)["\']'),
+    re.compile(r'(?:http\.)?HandleFunc\s*\(\s*["\'](\/[^"\']*)["\']'),
     # Laravel
-    re.compile(r'Route::(get|post|put|delete|patch)\s*\(\s*["\']([^"\']+)["\']'),
+    re.compile(r'Route::(get|post|put|delete|patch)\s*\(\s*["\'](\/[^"\']*)["\']', re.IGNORECASE),
     # Django
-    re.compile(r'path\s*\(\s*["\']([^"\']+)["\']'),
+    re.compile(r'\bpath\s*\(\s*["\']([^"\']+)["\']'),
 ]
 
 # Next.js / Nuxt file-based routing patterns
@@ -359,6 +363,44 @@ def extract_routes(
                                     "line": i + 1,
                                     "framework": "nestjs",
                                 })
+            except OSError:
+                pass
+
+        # ── Go source scan (Fiber, Gin, Echo, Chi) ─────────────
+        # Rust parser doesn't populate function_call args for Go, so scan source.
+        if lang == "go" and os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                    src_lines = fh.readlines()
+                go_route_re = re.compile(
+                    r'\b(\w+)\.(Get|Post|Put|Delete|Patch|Head|Options|Use|All|GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|USE|ALL)'
+                    r'\s*\(\s*["\'](\/[^"\']*)["\']\s*,\s*([\w.]+)'
+                )
+                # Skip common non-route method calls
+                _SKIP_GO_RECV = {"ctx", "c", "req", "request", "res", "response",
+                                 "header", "headers", "url", "w", "writer"}
+                for i, line in enumerate(src_lines):
+                    m = go_route_re.search(line)
+                    if not m:
+                        continue
+                    recv, verb, path, handler = m.groups()
+                    if recv.lower() in _SKIP_GO_RECV:
+                        continue
+                    method = verb.upper()
+                    if method in ("USE", "ALL"):
+                        method = "USE"
+                    key = f"{method}|{path}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    routes.append({
+                        "method": method,
+                        "path": path,
+                        "handler": handler,
+                        "file": rel_path,
+                        "line": i + 1,
+                        "framework": "go",
+                    })
             except OSError:
                 pass
 
