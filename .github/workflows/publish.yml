@@ -73,11 +73,6 @@ jobs:
     needs: [build, sdist]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    environment:
-      name: pypi
-      url: https://pypi.org/p/codegraphcontext-rust
-    permissions:
-      id-token: write
 
     steps:
       - name: Download all artifacts
@@ -93,6 +88,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
 
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python }})
@@ -119,7 +115,7 @@ jobs:
 
       - name: Install and test
         run: |
-          pip install --find-links dist codegraphcontext-rust kuzu
+          pip install --find-links dist codegraphcontext-rust
           python -c "
           from codegraphcontext._cgc_rust import parse_file
           from codegraphcontext.tools.indexing.engine import RUST_AVAILABLE, _RUST_SUPPORTED_LANGS
