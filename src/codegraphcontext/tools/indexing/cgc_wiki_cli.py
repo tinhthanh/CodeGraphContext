@@ -396,12 +396,19 @@ def _install_pretool_hook(settings_path: Path):
 
     # Check if already installed
     for hook in pre_tool:
-        if "cgc-wiki" in str(hook.get("command", "")):
-            return  # already installed
+        hooks_list = hook.get("hooks", [])
+        for h in hooks_list:
+            if "cgc-wiki" in str(h.get("command", "")):
+                return  # already installed
 
     pre_tool.append({
         "matcher": "Glob|Grep|Read",
-        "command": 'test -f .cgc-index/GRAPH_REPORT.md && echo "cgc-wiki: Knowledge graph exists at .cgc-index/. Read GRAPH_REPORT.md for god nodes, API routes, and execution flows before searching raw files." || true',
+        "hooks": [
+            {
+                "type": "command",
+                "command": 'test -f .cgc-index/GRAPH_REPORT.md && echo "cgc-wiki: Knowledge graph exists at .cgc-index/. Read GRAPH_REPORT.md for god nodes, API routes, and execution flows before searching raw files." || true',
+            }
+        ],
     })
 
     settings_path.write_text(json.dumps(settings, indent=2))
