@@ -92,6 +92,7 @@ def generate_module_contexts(
     routes: List[Dict] = None,
     flows: List[Dict] = None,
     rationales: List[Dict] = None,
+    op_params: List[Dict] = None,
 ) -> int:
     """Generate module_contexts/{slug}.md for each module."""
     os.makedirs(output_dir, exist_ok=True)
@@ -362,6 +363,20 @@ def generate_module_contexts(
                 ctx = f" in `{r['context']}`" if r.get("context") else ""
                 lines.append(f"- **[{r['tag']}]**{ctx}: {r['text']}")
                 lines.append(f"  — `{r['file']}:{r['line']}`")
+            lines.append("")
+
+        # ── Operational Parameters ─────────────────────────────
+        module_op_params = [p for p in (op_params or []) if p.get("path") in file_set]
+        if module_op_params:
+            lines.append("## Operational Parameters")
+            lines.append("")
+            lines.append("| Name | Value | Category | File | Line |")
+            lines.append("|------|-------|----------|------|------|")
+            for p in module_op_params[:30]:
+                lines.append(
+                    f"| `{p['name']}` | `{p['value']}` | {p['category']} "
+                    f"| `{p['path']}` | {p['line_number']} |"
+                )
             lines.append("")
 
         # ── Source Code (key files only) ────────────────────────

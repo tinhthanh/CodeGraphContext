@@ -85,9 +85,12 @@ def cmd_index(args):
     from codegraphcontext.tools.indexing.route_extraction import extract_routes
     from codegraphcontext.tools.indexing.rationale_extraction import extract_rationales
 
+    from codegraphcontext.tools.indexing.op_param_extraction import extract_operational_params
+
     flows = detect_execution_flows(valid, call_groups, repo_path=repo_path)
     routes = extract_routes(valid, repo_path)
     rationales = extract_rationales(valid, repo_path)
+    op_params = extract_operational_params(valid, repo_path)
 
     # Write to DuckDB
     from codegraphcontext.tools.indexing.persistence.duckdb_writer import DuckDBGraphWriter
@@ -106,6 +109,7 @@ def cmd_index(args):
     n_flows = counts.get("execution_flows", 0)
     n_routes = counts.get("routes", 0)
     n_rationale = counts.get("rationales", 0)
+    n_op_params = counts.get("operational_params", 0)
 
     print(f"DB write: {t_write:.1f}s")
     print(f"\n{'='*50}")
@@ -117,157 +121,50 @@ def cmd_index(args):
     print(f"  Execution flows: {n_flows}")
     print(f"  API routes:      {n_routes}")
     print(f"  Rationale notes: {n_rationale}")
+    print(f"  Op params:       {n_op_params}")
     print(f"  Output:          {db_path}")
     print(f"  Total time:      {t_parse + t_write:.1f}s")
 
     # Generate report
     report_path = os.path.join(output_dir, "GRAPH_REPORT.md")
-    _generate_report(writer, db_path, repo_path, report_path, counts, flows, routes, rationales)
+    _generate_report(writer, db_path, repo_path, report_path, counts, flows, routes, rationales, op_params)
     print(f"  Report:          {report_path}")
 
     # Generate module contexts for AI IDE wiki generation
-    from codegraphcontext.tools.indexing.module_grouping import auto_group_modules
+    from codegraphcontext.tools.indexing.module_grouping import auto_group_modules, group_parents
     from codegraphcontext.tools.indexing.context_generator import generate_module_contexts
 
     modules = auto_group_modules(valid, repo_path)
+    parent_groups = group_parents(modules)
     ctx_dir = os.path.join(output_dir, "module_contexts")
     n_ctx = generate_module_contexts(
         modules, valid, repo_path, ctx_dir,
-        call_groups=call_groups, routes=routes, flows=flows, rationales=rationales,
+        call_groups=call_groups, routes=routes, flows=flows,
+        rationales=rationales, op_params=op_params,
     )
+
+    # Save modules.json with parent hierarchy
+    import json as _json
+    modules_json_path = os.path.join(output_dir, "modules.json")
+    with open(modules_json_path, "w") as fh:
+        _json.dump({"modules": modules, "parent_groups": parent_groups}, fh, indent=2)
+
     print(f"  Modules:         {len(modules)} ({n_ctx} context files)")
+    if parent_groups:
+        print(f"  Parent groups:   {len(parent_groups)}")
     print(f"  Context dir:     {ctx_dir}")
     print(f"\n  → AI IDE: read module_contexts/ + type /wiki to generate docs")
 
 
-def _generate_report(writer, db_path, repo_path, report_path, counts, flows, routes, rationales):
+def _generate_report(writer, db_path, repo_path, report_path, counts, flows, routes, rationales, op_params=None):
     """Generate GRAPH_REPORT.md (like Graphify)."""
     from codegraphcontext.tools.indexing.persistence.duckdb_writer import DuckDBGraphWriter
-
-    # God-node noise: skip accessors, test DSL, built-ins
-    _GOD_NODE_NOISE = {
-        # Java/generic accessors
-        "get", "set", "of", "put", "add", "remove", "size", "isEmpty",
-        "equals", "hashCode", "toString", "compareTo", "valueOf", "values",
-        "build", "builder", "clone", "close", "read", "write",
-        "from", "apply", "accept", "test", "run", "call",
-        # Lombok-style getters/setters
-        "getId", "getName", "getStatus", "getType", "getValue", "getCode",
-        "getCreatedAt", "getUpdatedAt", "getPath", "getMessage",
-        "setId", "setName", "setStatus", "setType", "setValue",
-        # Jackson / JSON
-        "asText", "asLong", "asInt", "asBoolean", "isMissingNode", "isArray",
-        "path", "jsonPath", "readTree", "readValue", "writeValueAsString",
-        # Test DSL (JUnit, MockMvc, Jest, Vitest, Testing Library)
-        "it", "describe", "expect", "toBe", "toEqual", "assert",
-        "andExpect", "assertThat", "verify", "mock", "when", "given",
-        "mockResolvedValue", "mockReturnValue", "waitForTimeout",
-        "perform", "isOk", "content", "header", "value",
-        "toHaveBeenCalled", "toHaveBeenCalledWith", "toContain",
-        "toBeTruthy", "toBeFalsy", "toBeDefined", "toBeNull",
-        "render", "screen", "fireEvent", "waitFor", "userEvent",
-        "vi", "beforeEach", "afterEach", "beforeAll", "afterAll",
-        # HTTP / response
-        "status", "ok", "body", "json", "parse", "stringify",
-        # Logging
-        "log", "error", "warn", "info", "debug", "println", "printf",
-        # Java stdlib
-        "format", "trim", "split", "join", "replace", "contains",
-        "append", "insert", "delete", "substring", "length",
-        "stream", "map", "filter", "collect", "forEach", "reduce",
-        "Optional", "orElse", "orElseThrow", "isPresent", "ifPresent",
-        "currentTimeMillis", "nanoTime", "now",
-        # TS/JS stdlib built-ins often leak
-        "String", "Date", "Number", "Boolean", "Array", "Object",
-        "Error", "Float32Array", "Int32Array", "Uint8Array", "Math",
-        "Promise", "Symbol", "Set", "Map", "JSON",
-        # Tailwind / className utilities
-        "cn", "clsx", "cx", "tw", "twMerge",
-        # React hooks used everywhere (too noisy to count as "hub")
-        "useState", "useEffect", "useCallback", "useMemo", "useRef",
-        "useContext", "useReducer", "useLayoutEffect",
-        # Python stdlib + common test DSL
-        "uuid4", "uuid1", "print", "len", "str", "int", "float", "dict",
-        "list", "tuple", "range", "isinstance", "hasattr", "getattr",
-        "setattr", "type", "enumerate", "zip", "sorted", "reversed",
-        "MagicMock", "AsyncMock", "Mock", "patch",
-        "pytest", "fixture", "raises", "mark",
-        # SQLAlchemy declarative column/migration noise (Alembic templates)
-        "Column", "String", "Integer", "Text", "Boolean", "DateTime",
-        "ForeignKey", "Index", "UniqueConstraint", "Table",
-        # Go testing + testify + gomock + stdlib
-        "T", "B", "M", "Helper", "Logf", "Skip", "SkipNow", "FailNow",
-        "Errorf", "Fatalf", "Error", "Fatal", "Log",
-        "NoError", "Equal", "NotEqual", "Nil", "NotNil", "True", "False",
-        "Empty", "NotEmpty", "Len", "Contains", "NotContains",
-        "Greater", "Less", "InDelta", "ElementsMatch", "Subset",
-        "EXPECT", "DoAndReturn", "Return", "Times", "AnyTimes", "Do",
-        "Finish", "NewController", "Call",
-        "Background", "TODO", "WithValue", "WithCancel", "WithTimeout",
-        "Printf", "Println", "Sprintf", "Sprintln", "Errorf",
-        "Make", "Append", "Copy", "Close", "Open", "Read", "Write",
-        "String",  # Go method for stringer
-        # Go logger levels + HTTP response primitives
-        "Info", "Warn", "Debug", "Trace",
-        "WriteString", "SendString", "WriteJSON", "SendStatus",
-        "Next", "Locals", "Param", "Params", "Query", "QueryParser",
-        "JSON", "BodyParser", "ParamsParser",
-        # Go testing extra
-        "Parallel", "Cleanup", "Deadline",
-        # Angular reactive forms primitives (leak heavily in form-heavy apps)
-        "FormControl", "FormGroup", "FormArray", "FormBuilder", "Validators",
-        "AbstractControl", "ControlValueAccessor",
-        # Angular testing
-        "TestBed", "inject", "fakeAsync", "tick", "flush", "waitForAsync",
-        "ComponentFixture", "DebugElement",
-        # RxJS ubiquitous primitives
-        "Subject", "BehaviorSubject", "ReplaySubject", "Observable",
-        "of", "from", "pipe", "map", "filter", "tap", "switchMap",
-        "mergeMap", "catchError", "take", "takeUntil", "subscribe",
-        # Ionic common UI
-        "ModalController", "ToastController", "AlertController",
-        "LoadingController", "NavController",
-    }
-
-    import re as _re
-    _ACCESSOR_RE = _re.compile(r"^(get|set|is|has)[A-Z]")
-    # Java 14+ record component accessors: single lowercase word like name(), customerId()
-    # These have no get/set prefix but are pure accessors — filter from god nodes
-    _RECORD_ACCESSOR_RE = _re.compile(r"^[a-z][a-zA-Z]*$")
-    # React hook pattern — DO count as meaningful (architectural hub in React codebases)
-    _REACT_HOOK_RE = _re.compile(r"^use[A-Z]\w*$")
-    # Known meaningful single-word functions to keep (not record accessors)
-    _MEANINGFUL_NAMES = {
-        "main", "run", "start", "execute", "init", "setup", "configure",
-        "handle", "process", "validate", "create", "update", "delete",
-        "save", "load", "find", "search", "index", "render", "dispatch",
-        "schedule", "publish", "subscribe", "connect", "disconnect",
-        "authenticate", "authorize", "transform", "convert", "migrate",
-        "fetch", "post", "get", "put", "patch",
-    }
+    from codegraphcontext.tools.indexing.noise_filter import is_noise_node
 
     w = DuckDBGraphWriter(db_path)
     raw_top = w.get_top_connected(limit=50)
-
-    def _is_noise(t):
-        name = t.get("name", "")
-        path = t.get("path", "") or ""
-        if name in _GOD_NODE_NOISE:
-            return True
-        # React hooks are meaningful — keep (except those already in noise list above)
-        if _REACT_HOOK_RE.match(name):
-            return False
-        if _ACCESSOR_RE.match(name):
-            return True
-        # Record accessor heuristic: short camelCase name, not meaningful
-        if (_RECORD_ACCESSOR_RE.match(name)
-            and name not in _MEANINGFUL_NAMES
-            and len(name) <= 20
-            and t.get("call_count", 0) >= 5):
-            return True
-        return False
-
-    top = [t for t in raw_top if not _is_noise(t)][:10]
+    top = [t for t in raw_top
+           if not is_noise_node(t.get("name", ""), t.get("call_count", 0))][:10]
     stats = w.get_stats()
     w.close()
 
@@ -311,10 +208,20 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
             lines.append(f"- **[{r['tag']}]**{ctx}: {r['text']}")
             lines.append(f"  — `{r['file']}:{r['line']}`")
 
+    if op_params:
+        lines.extend(["", "## Operational Parameters", ""])
+        lines.append("| Name | Value | Category | File | Line |")
+        lines.append("|------|-------|----------|------|------|")
+        for p in (op_params or [])[:30]:
+            lines.append(
+                f"| `{p['name']}` | `{p['value']}` | {p['category']} "
+                f"| `{p['path']}` | {p['line_number']} |"
+            )
+
     lines.extend([
         "",
         "---",
-        f"*Generated by CGC v0.7.0 · {time.strftime('%Y-%m-%d %H:%M')}*",
+        f"*Generated by CGC v0.9.6 · {time.strftime('%Y-%m-%d %H:%M')}*",
     ])
 
     with open(report_path, "w") as fh:

@@ -119,6 +119,9 @@ class DuckDBGraphWriter:
             method VARCHAR, path VARCHAR, handler VARCHAR,
             file VARCHAR, line INTEGER DEFAULT 0,
             framework VARCHAR DEFAULT '')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS operational_params (
+            name VARCHAR, value VARCHAR, path VARCHAR,
+            line_number INTEGER DEFAULT 0, category VARCHAR DEFAULT '')""")
         self._schema_created = True
 
     # ── Main write method ────────────────────────────────────────────
@@ -383,7 +386,7 @@ class DuckDBGraphWriter:
         c = self._conn
 
         # Drop existing data
-        for tbl in ["rationales", "routes", "execution_flows", "calls", "inheritance", "file_contains",
+        for tbl in ["operational_params", "rationales", "routes", "execution_flows", "calls", "inheritance", "file_contains",
                      "imports", "parameters", "variables", "classes", "functions",
                      "directories", "files", "modules", "repository"]:
             c.execute(f"DROP TABLE IF EXISTS {tbl}")
@@ -481,6 +484,21 @@ class DuckDBGraphWriter:
         except Exception as exc:
             logger.debug("Rationale extraction failed: %s", exc)
 
+        # ── Extract operational parameters ──────────────────────────
+        detected_op_params = []
+        try:
+            from ..op_param_extraction import extract_operational_params
+            detected_op_params = extract_operational_params(parsed_results, repo_path)
+            if detected_op_params:
+                c.executemany(
+                    "INSERT INTO operational_params VALUES (?,?,?,?,?)",
+                    [(p["name"], p["value"], p["path"],
+                      p["line_number"], p["category"])
+                     for p in detected_op_params],
+                )
+        except Exception as exc:
+            logger.debug("Operational param extraction failed: %s", exc)
+
         # ── Post-process: fill inheritance from classes.bases ──────
         try:
             # Build class name → uid map
@@ -547,6 +565,7 @@ class DuckDBGraphWriter:
             "execution_flows": len(flows),
             "routes": len(detected_routes),
             "rationales": len(detected_rationales),
+            "operational_params": len(detected_op_params),
             "elapsed_s": round(elapsed, 2),
         }
         logger.info(f"DuckDB write complete: {counts}")
@@ -563,6 +582,31 @@ class DuckDBGraphWriter:
             except Exception:
                 stats[tbl] = 0
         return stats
+
+    def get_operational_params(self, file_paths: List[str] = None) -> List[Dict]:
+        """Get operational parameters, optionally filtered by file paths."""
+        try:
+            if file_paths:
+                placeholders = ",".join(["?"] * len(file_paths))
+                rows = self._conn.execute(f"""
+                    SELECT name, value, path, line_number, category
+                    FROM operational_params
+                    WHERE path IN ({placeholders})
+                    ORDER BY path, line_number
+                """, file_paths).fetchall()
+            else:
+                rows = self._conn.execute("""
+                    SELECT name, value, path, line_number, category
+                    FROM operational_params
+                    ORDER BY path, line_number
+                """).fetchall()
+            return [
+                {"name": r[0], "value": r[1], "path": r[2],
+                 "line_number": r[3], "category": r[4]}
+                for r in rows
+            ]
+        except Exception:
+            return []
 
     def get_top_connected(self, limit: int = 30) -> List[Dict]:
         """Get top connected functions/classes by call count."""

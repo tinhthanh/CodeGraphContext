@@ -465,3 +465,87 @@ def _build_module_metadata(
 
     logger.info("Built %d modules from manifest", len(modules))
     return modules
+
+
+def group_parents(
+    modules: List[Dict[str, Any]],
+    threshold: int = 10,
+) -> List[Dict[str, Any]]:
+    """Group modules into parent categories when count >= threshold.
+
+    Uses the first meaningful directory segment shared by module files
+    to cluster modules into 3-7 parent groups.
+
+    Returns list of:
+        {name, slug, children: [module_slug, ...]}
+    Returns empty list if module count < threshold.
+    """
+    if len(modules) < threshold:
+        return []
+
+    # Group by first directory segment of the module's dir field
+    parent_map: Dict[str, List[str]] = defaultdict(list)
+
+    for mod in modules:
+        mod_dir = mod.get("dir", "")
+        files = mod.get("files", [])
+        slug = mod.get("slug", "")
+
+        # Find common parent from dir or first file path
+        if mod_dir:
+            parts = Path(mod_dir).parts
+            parent_name = None
+            for part in parts:
+                if part.lower() not in _SKIP_DIR_NAMES and not part.startswith("."):
+                    parent_name = part
+                    break
+            if not parent_name and parts:
+                parent_name = parts[0]
+        elif files:
+            parts = Path(files[0]).parts
+            parent_name = parts[0] if parts else "(root)"
+        else:
+            parent_name = "(other)"
+
+        parent_map[parent_name or "(other)"].append(slug)
+
+    # If only 1-2 parents, try splitting further
+    if len(parent_map) < 3:
+        return []
+
+    # Merge tiny parents (< 2 modules) into "(other)"
+    merged: Dict[str, List[str]] = {}
+    other: List[str] = []
+    for name, children in parent_map.items():
+        if len(children) < 2:
+            other.extend(children)
+        else:
+            merged[name] = children
+    if other:
+        merged["Other"] = other
+
+    # Quality check: if "Other" has > 50% of modules, grouping isn't natural → skip
+    total_modules = len(modules)
+    other_count = len(merged.get("Other", []))
+    if other_count > total_modules * 0.5:
+        logger.info("Parent grouping skipped: %d/%d modules in 'Other' (> 50%%)",
+                     other_count, total_modules)
+        return []
+
+    # Also skip if too few real groups (excluding Other)
+    real_groups = len([k for k in merged if k != "Other"])
+    if real_groups < 2:
+        logger.info("Parent grouping skipped: only %d real groups", real_groups)
+        return []
+
+    parents = []
+    for name, children in sorted(merged.items()):
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "other"
+        parents.append({
+            "name": _humanize_dir(name),
+            "slug": slug,
+            "children": sorted(children),
+        })
+
+    logger.info("Grouped %d modules into %d parents", len(modules), len(parents))
+    return parents
