@@ -89,6 +89,7 @@ jobs:
         with:
           packages-dir: dist/
           password: ${{ secrets.PYPI_API_TOKEN }}
+          attestations: false
 
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python }})
@@ -115,7 +116,7 @@ jobs:
 
       - name: Install and test
         run: |
-          pip install --find-links dist codegraphcontext-rust
+          pip install --find-links dist --no-deps codegraphcontext-rust
           python -c "
           from codegraphcontext._cgc_rust import parse_file
           from codegraphcontext.tools.indexing.engine import RUST_AVAILABLE, _RUST_SUPPORTED_LANGS
