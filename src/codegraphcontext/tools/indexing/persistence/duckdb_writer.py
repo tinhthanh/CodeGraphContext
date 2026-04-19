@@ -751,6 +751,21 @@ class DuckDBGraphWriter:
         except Exception:
             return []
 
+    def get_rationales(self, limit: int = 200) -> List[Dict]:
+        """Get design rationale comments."""
+        try:
+            rows = self._conn.execute("""
+                SELECT tag, text, file, line, context
+                FROM rationales ORDER BY file, line LIMIT ?
+            """, [limit]).fetchall()
+            return [
+                {"tag": r[0], "text": r[1], "file": r[2],
+                 "line": r[3], "context": r[4]}
+                for r in rows
+            ]
+        except Exception:
+            return []
+
     def execute(self, query: str, params=None):
         """Raw query execution for advanced use."""
         if params:

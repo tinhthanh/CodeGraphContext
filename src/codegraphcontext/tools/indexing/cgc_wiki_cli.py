@@ -80,27 +80,21 @@ def cmd_index(args):
     t_parse = time.time() - t0
     print(f"\nParse + resolve: {t_parse:.1f}s")
 
-    # Detect flows, routes, rationale
-    from codegraphcontext.tools.indexing.execution_flows import detect_execution_flows
-    from codegraphcontext.tools.indexing.route_extraction import extract_routes
-    from codegraphcontext.tools.indexing.rationale_extraction import extract_rationales
-
-    from codegraphcontext.tools.indexing.op_param_extraction import extract_operational_params
-
-    flows = detect_execution_flows(valid, call_groups, repo_path=repo_path)
-    routes = extract_routes(valid, repo_path)
-    rationales = extract_rationales(valid, repo_path)
-    op_params = extract_operational_params(valid, repo_path)
-
-    # Write to DuckDB
+    # Write to DuckDB (detects flows/routes/rationales/op_params internally)
     from codegraphcontext.tools.indexing.persistence.duckdb_writer import DuckDBGraphWriter
 
     db_path = os.path.join(output_dir, "graph.duckdb")
     t0 = time.time()
     writer = DuckDBGraphWriter(db_path)
     counts = writer.write_all(valid, repo_path, call_groups, inheritance)
-    writer.close()
     t_write = time.time() - t0
+
+    # Read back from DB (no duplicate extraction)
+    flows = writer.get_execution_flows()
+    routes = writer.get_routes()
+    rationales = writer.get_rationales()
+    op_params = writer.get_operational_params()
+    writer.close()
 
     # Summary
     funcs = counts.get("functions", 0)
