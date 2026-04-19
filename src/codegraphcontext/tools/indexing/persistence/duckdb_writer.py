@@ -463,6 +463,44 @@ class DuckDBGraphWriter:
         except Exception as exc:
             logger.debug("Rationale extraction failed: %s", exc)
 
+        # ── Post-process: fill inheritance from classes.bases ──────
+        try:
+            # Build class name → uid map
+            class_map = {}
+            for row in c.execute("SELECT uid, name, path FROM classes").fetchall():
+                class_map[row[1]] = (row[0], row[2])
+
+            # Check existing inheritance count
+            existing = c.execute("SELECT count(*) FROM inheritance").fetchone()[0]
+
+            # For each class with bases, create inheritance edges if not exists
+            added = 0
+            for row in c.execute("SELECT uid, name, path, bases FROM classes WHERE bases != ''").fetchall():
+                child_uid, child_name, child_path, bases_str = row
+                # Parse bases: comma-separated, may have generics
+                import re as _re
+                base_names = [b.strip().split("<")[0].strip()
+                              for b in _re.split(r"[,;]", bases_str) if b.strip()]
+                for base_name in base_names:
+                    if base_name in class_map:
+                        parent_uid, parent_path = class_map[base_name]
+                        # Check if already in inheritance table
+                        exists = c.execute(
+                            "SELECT 1 FROM inheritance WHERE child_uid=? AND parent_uid=?",
+                            [child_uid, parent_uid],
+                        ).fetchone()
+                        if not exists:
+                            c.execute(
+                                "INSERT INTO inheritance VALUES (?,?,?,?,?,?)",
+                                [child_uid, parent_uid, child_name, base_name,
+                                 child_path, parent_path],
+                            )
+                            added += 1
+            if added:
+                logger.info("Post-process: added %d inheritance edges (was %d)", added, existing)
+        except Exception as exc:
+            logger.debug("Inheritance post-process failed: %s", exc)
+
         # Cleanup temp parquet
         import shutil
         shutil.rmtree(pq_dir, ignore_errors=True)
