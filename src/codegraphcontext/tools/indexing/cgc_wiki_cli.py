@@ -158,11 +158,15 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
         # Jackson / JSON
         "asText", "asLong", "asInt", "asBoolean", "isMissingNode", "isArray",
         "path", "jsonPath", "readTree", "readValue", "writeValueAsString",
-        # Test DSL (JUnit, MockMvc, Jest)
+        # Test DSL (JUnit, MockMvc, Jest, Vitest, Testing Library)
         "it", "describe", "expect", "toBe", "toEqual", "assert",
         "andExpect", "assertThat", "verify", "mock", "when", "given",
         "mockResolvedValue", "mockReturnValue", "waitForTimeout",
         "perform", "isOk", "content", "header", "value",
+        "toHaveBeenCalled", "toHaveBeenCalledWith", "toContain",
+        "toBeTruthy", "toBeFalsy", "toBeDefined", "toBeNull",
+        "render", "screen", "fireEvent", "waitFor", "userEvent",
+        "vi", "beforeEach", "afterEach", "beforeAll", "afterAll",
         # HTTP / response
         "status", "ok", "body", "json", "parse", "stringify",
         # Logging
@@ -173,6 +177,15 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
         "stream", "map", "filter", "collect", "forEach", "reduce",
         "Optional", "orElse", "orElseThrow", "isPresent", "ifPresent",
         "currentTimeMillis", "nanoTime", "now",
+        # TS/JS stdlib built-ins often leak
+        "String", "Date", "Number", "Boolean", "Array", "Object",
+        "Error", "Float32Array", "Int32Array", "Uint8Array", "Math",
+        "Promise", "Symbol", "Set", "Map", "JSON",
+        # Tailwind / className utilities
+        "cn", "clsx", "cx", "tw", "twMerge",
+        # React hooks used everywhere (too noisy to count as "hub")
+        "useState", "useEffect", "useCallback", "useMemo", "useRef",
+        "useContext", "useReducer", "useLayoutEffect",
     }
 
     import re as _re
@@ -180,6 +193,8 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
     # Java 14+ record component accessors: single lowercase word like name(), customerId()
     # These have no get/set prefix but are pure accessors — filter from god nodes
     _RECORD_ACCESSOR_RE = _re.compile(r"^[a-z][a-zA-Z]*$")
+    # React hook pattern — DO count as meaningful (architectural hub in React codebases)
+    _REACT_HOOK_RE = _re.compile(r"^use[A-Z]\w*$")
     # Known meaningful single-word functions to keep (not record accessors)
     _MEANINGFUL_NAMES = {
         "main", "run", "start", "execute", "init", "setup", "configure",
@@ -187,6 +202,7 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
         "save", "load", "find", "search", "index", "render", "dispatch",
         "schedule", "publish", "subscribe", "connect", "disconnect",
         "authenticate", "authorize", "transform", "convert", "migrate",
+        "fetch", "post", "get", "put", "patch",
     }
 
     w = DuckDBGraphWriter(db_path)
@@ -194,8 +210,12 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
 
     def _is_noise(t):
         name = t.get("name", "")
+        path = t.get("path", "") or ""
         if name in _GOD_NODE_NOISE:
             return True
+        # React hooks are meaningful — keep (except those already in noise list above)
+        if _REACT_HOOK_RE.match(name):
+            return False
         if _ACCESSOR_RE.match(name):
             return True
         # Record accessor heuristic: short camelCase name, not meaningful

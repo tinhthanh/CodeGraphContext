@@ -123,13 +123,32 @@ def extract_routes(
         if file_name in _NEXTJS_ROUTE_FILES:
             route = _extract_nextjs_route(file_path, repo_path)
             if route is not None:
-                # Find the main exported function
+                # Next.js convention: route handler is ALWAYS `export default`.
+                # Scan source for that pattern first — definitive, avoids picking
+                # private helper functions like ParentRow, StatsCard, etc.
                 handler = ""
-                for fn in file_data.get("functions", []):
-                    name = fn.get("name", "")
-                    if name and name[0].isupper():  # Capitalized = component
-                        handler = name
-                        break
+                if os.path.exists(file_path):
+                    try:
+                        with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                            src = fh.read()
+                        # export default function Name(...)
+                        m = re.search(r'export\s+default\s+(?:async\s+)?function\s+([A-Z]\w*)', src)
+                        if m:
+                            handler = m.group(1)
+                        else:
+                            # export default Name    |    export default const Name = ...
+                            m = re.search(r'export\s+default\s+([A-Z]\w*)\b', src)
+                            if m:
+                                handler = m.group(1)
+                    except OSError:
+                        pass
+
+                if not handler:
+                    for fn in file_data.get("functions", []):
+                        name = fn.get("name", "")
+                        if name and name[0].isupper():
+                            handler = name
+                            break
                 if not handler:
                     fns = file_data.get("functions", [])
                     handler = fns[0]["name"] if fns else file_name

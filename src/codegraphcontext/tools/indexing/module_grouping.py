@@ -278,6 +278,19 @@ def auto_group_modules(
             "entry_functions": entry_funcs[:10],
         })
 
+    # ── Disambiguate duplicate slugs (Next.js app/ vs components/ etc.) ──
+    # When two modules have same slug (e.g. src/app/admin and src/components/admin),
+    # prepend parent dir segment so each gets a unique slug + distinguishable name.
+    slug_counts: Counter = Counter(m["slug"] for m in modules)
+    for m in modules:
+        if slug_counts[m["slug"]] > 1:
+            dir_parts = [p for p in m["dir"].split("/") if p and not (p.startswith("(") and p.endswith(")"))]
+            if len(dir_parts) >= 2:
+                full_slug = re.sub(r"[^a-z0-9]+", "-", "-".join(dir_parts).lower()).strip("-")
+                parent_seg = _humanize_dir(dir_parts[-2])
+                m["slug"] = full_slug
+                m["name"] = f"{m['name']} ({parent_seg})"
+
     logger.info("Auto-grouped %d files into %d modules", len(file_data), len(modules))
     return modules
 
