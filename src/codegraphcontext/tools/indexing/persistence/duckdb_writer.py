@@ -478,12 +478,14 @@ class DuckDBGraphWriter:
             added = 0
             for row in c.execute("SELECT uid, name, path, bases FROM classes WHERE bases != ''").fetchall():
                 child_uid, child_name, child_path, bases_str = row
-                # Strip ALL generic type params first: BaseCrudService<A, B, C> → BaseCrudService
-                stripped = _re.sub(r"<[^<>]*>", "", bases_str)
-                # Handle nested generics: Map<String, List<Integer>> → Map
+                # Normalize: remove newlines, strip "extends"/"implements" keywords
+                cleaned = bases_str.replace("\n", " ").replace("\r", "")
+                cleaned = _re.sub(r"\b(extends|implements)\b", ",", cleaned)
+                # Strip ALL generic type params: BaseCrudService<A, B, C> → BaseCrudService
+                stripped = _re.sub(r"<[^<>]*>", "", cleaned)
                 while "<" in stripped:
                     stripped = _re.sub(r"<[^<>]*>", "", stripped)
-                # Now split by comma safely
+                # Split by comma, clean whitespace
                 base_names = [b.strip() for b in stripped.split(",") if b.strip()]
                 for base_name in base_names:
                     if base_name in class_map:
