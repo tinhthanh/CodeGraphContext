@@ -280,28 +280,44 @@ def auto_group_modules(
 
         dir_groups[meaningful_dir].append(rel_path)
 
-    # ── Split oversized groups ─────────────────────────────────
+    # ── Split oversized groups (recursive by directory depth) ──
+    def _dir_split(files: List[str], after_dir: str, depth: int = 0) -> Dict[str, List[str]]:
+        """Split files by the directory immediately after `after_dir` in each
+        file's path. Recurses on oversized sub-groups (max depth 3)."""
+        last_seg = after_dir.rsplit("/", 1)[-1]
+        sub: Dict[str, List[str]] = defaultdict(list)
+        for f in files:
+            parts = Path(f).parts
+            try:
+                idx = len(parts) - 1 - list(reversed(parts)).index(last_seg)
+            except ValueError:
+                sub[after_dir].append(f)
+                continue
+            if idx + 1 < len(parts) - 1:
+                sub_dir = parts[idx + 1]
+                # Skip generic wrapper dirs transparently
+                if sub_dir.lower() in _SKIP_DIR_NAMES and idx + 2 < len(parts) - 1:
+                    sub_dir = parts[idx + 2]
+                sub[f"{after_dir}/{sub_dir}"].append(f)
+            else:
+                sub[after_dir].append(f)
+        if depth < 3:
+            expanded: Dict[str, List[str]] = {}
+            for k, v in sub.items():
+                if len(v) > max_files_per_module * 3 and k != after_dir:
+                    deeper = _dir_split(v, k, depth + 1)
+                    expanded.update(deeper)
+                else:
+                    expanded[k] = v
+            sub = expanded
+        return dict(sub)
+
     final_groups: Dict[str, List[str]] = {}
     for dir_name, files in dir_groups.items():
-        if len(files) <= max_files_per_module:
+        if len(files) <= max_files_per_module * 3:
             final_groups[dir_name] = files
         else:
-            # Split by subdirectory
-            sub_groups: Dict[str, List[str]] = defaultdict(list)
-            for f in files:
-                parts = Path(f).parts
-                # Find dir after the current group dir
-                try:
-                    idx = list(parts).index(dir_name.split("/")[0])
-                    if idx + 1 < len(parts) - 1:
-                        sub_dir = parts[idx + 1]
-                        sub_groups[f"{dir_name}/{sub_dir}"].append(f)
-                    else:
-                        sub_groups[dir_name].append(f)
-                except ValueError:
-                    sub_groups[dir_name].append(f)
-
-            for sub_name, sub_files in sub_groups.items():
+            for sub_name, sub_files in _dir_split(files, dir_name).items():
                 final_groups[sub_name] = sub_files
 
     # ── Merge tiny groups ──────────────────────────────────────

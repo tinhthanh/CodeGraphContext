@@ -260,9 +260,29 @@ def extract_routes(
                 with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
                     source_lines = fh.readlines()
 
-                # Find class-level @RequestMapping prefix
+                def _is_commented(line: str) -> bool:
+                    """Skip // line-comments and lines inside /* ... */ blocks."""
+                    stripped = line.lstrip()
+                    return stripped.startswith("//") or stripped.startswith("*")
+
+                # Track /* ... */ block comment state
+                _block_comment = [False] * len(source_lines)
+                in_block = False
+                for i, ln in enumerate(source_lines):
+                    if in_block:
+                        _block_comment[i] = True
+                        if "*/" in ln:
+                            in_block = False
+                    else:
+                        if "/*" in ln and "*/" not in ln:
+                            in_block = True
+                            _block_comment[i] = True
+
+                # Find class-level @RequestMapping prefix (skip commented)
                 class_prefix = ""
-                for line in source_lines:
+                for i, line in enumerate(source_lines):
+                    if _block_comment[i] or _is_commented(line):
+                        continue
                     rm = re.search(r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?["\']([^"\']+)["\']', line)
                     if rm:
                         class_prefix = rm.group(1).rstrip("/")
@@ -273,6 +293,8 @@ def extract_routes(
                     r'@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?["\']([^"\']+)["\']'
                 )
                 for i, line in enumerate(source_lines):
+                    if _block_comment[i] or _is_commented(line):
+                        continue
                     am = annotation_re.search(line)
                     if am:
                         method = am.group(1).upper()
@@ -280,15 +302,18 @@ def extract_routes(
                         if not path.startswith("/"):
                             path = "/" + path
 
-                        # Find handler: closest function AFTER this annotation (within 5 lines)
+                        # Find handler: closest function within ±5 lines of annotation.
+                        # Rust parser sometimes reports function line as FIRST annotation
+                        # (e.g. @Scheduled above @GetMapping), so we look both directions.
                         handler = ""
                         ann_line = i + 1
                         best_fn = None
                         best_dist = 999
                         for fn in file_data.get("functions", []):
                             fn_line = fn.get("line_number", 0)
-                            if fn_line >= ann_line and (fn_line - ann_line) < best_dist:
-                                best_dist = fn_line - ann_line
+                            dist = abs(fn_line - ann_line)
+                            if dist < best_dist:
+                                best_dist = dist
                                 best_fn = fn
                         if best_fn and best_dist <= 5:
                             handler = best_fn.get("name", "")
@@ -329,6 +354,9 @@ def extract_routes(
                         r"@(Get|Post|Put|Delete|Patch)\s*\(\s*(?:['\"]([^'\"]*)['\"])?\s*\)"
                     )
                     for i, line in enumerate(source_lines):
+                        stripped = line.lstrip()
+                        if stripped.startswith("//") or stripped.startswith("*"):
+                            continue
                         nm = nestjs_re.search(line)
                         if nm:
                             method = nm.group(1).upper()
@@ -380,6 +408,9 @@ def extract_routes(
                 _SKIP_GO_RECV = {"ctx", "c", "req", "request", "res", "response",
                                  "header", "headers", "url", "w", "writer"}
                 for i, line in enumerate(src_lines):
+                    stripped = line.lstrip()
+                    if stripped.startswith("//") or stripped.startswith("*"):
+                        continue
                     m = go_route_re.search(line)
                     if not m:
                         continue
