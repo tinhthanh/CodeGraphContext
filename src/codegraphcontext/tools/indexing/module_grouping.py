@@ -281,13 +281,20 @@ def auto_group_modules(
     # ── Disambiguate duplicate slugs (Next.js app/ vs components/ etc.) ──
     # When two modules have same slug (e.g. src/app/admin and src/components/admin),
     # prepend parent dir segment so each gets a unique slug + distinguishable name.
+    # Next.js route groups like (dashboard), (public) are kept (with parens stripped)
+    # as meaningful disambiguators when they are the only parent segment available.
     slug_counts: Counter = Counter(m["slug"] for m in modules)
     for m in modules:
         if slug_counts[m["slug"]] > 1:
-            dir_parts = [p for p in m["dir"].split("/") if p and not (p.startswith("(") and p.endswith(")"))]
-            if len(dir_parts) >= 2:
-                full_slug = re.sub(r"[^a-z0-9]+", "-", "-".join(dir_parts).lower()).strip("-")
-                parent_seg = _humanize_dir(dir_parts[-2])
+            raw_parts = [p for p in m["dir"].split("/") if p]
+            # Strip parens from route groups but keep them as semantic parents
+            cleaned_parts = [
+                p[1:-1] if p.startswith("(") and p.endswith(")") else p
+                for p in raw_parts
+            ]
+            if len(cleaned_parts) >= 2:
+                full_slug = re.sub(r"[^a-z0-9]+", "-", "-".join(cleaned_parts).lower()).strip("-")
+                parent_seg = _humanize_dir(cleaned_parts[-2])
                 m["slug"] = full_slug
                 m["name"] = f"{m['name']} ({parent_seg})"
 

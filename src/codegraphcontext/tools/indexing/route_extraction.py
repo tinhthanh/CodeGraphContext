@@ -123,47 +123,89 @@ def extract_routes(
         if file_name in _NEXTJS_ROUTE_FILES:
             route = _extract_nextjs_route(file_path, repo_path)
             if route is not None:
-                # Next.js convention: route handler is ALWAYS `export default`.
-                # Scan source for that pattern first — definitive, avoids picking
-                # private helper functions like ParentRow, StatsCard, etc.
-                handler = ""
-                if os.path.exists(file_path):
+                is_route_file = file_name.startswith("route.")
+
+                if is_route_file and os.path.exists(file_path):
+                    # App Router `route.ts` exports one function per HTTP method:
+                    #   export async function GET(req) { ... }
+                    #   export async function POST(req) { ... }
+                    # Emit one route per exported method.
                     try:
                         with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
                             src = fh.read()
-                        # export default function Name(...)
-                        m = re.search(r'export\s+default\s+(?:async\s+)?function\s+([A-Z]\w*)', src)
-                        if m:
-                            handler = m.group(1)
-                        else:
-                            # export default Name    |    export default const Name = ...
-                            m = re.search(r'export\s+default\s+([A-Z]\w*)\b', src)
+                    except OSError:
+                        src = ""
+                    method_re = re.compile(
+                        r'export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b',
+                    )
+                    found_methods = set()
+                    for m in method_re.finditer(src):
+                        method = m.group(1).upper()
+                        if method in found_methods:
+                            continue
+                        found_methods.add(method)
+                        key = f"{method}|{route}"
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        routes.append({
+                            "method": method,
+                            "path": route,
+                            "handler": method,  # route.ts handler IS the method
+                            "file": rel_path,
+                            "line": 0,
+                            "framework": "nextjs",
+                        })
+                    if not found_methods:
+                        # Fallback: emit a GET route with file name
+                        key = f"GET|{route}"
+                        if key not in seen:
+                            seen.add(key)
+                            routes.append({
+                                "method": "GET", "path": route,
+                                "handler": "", "file": rel_path,
+                                "line": 0, "framework": "nextjs",
+                            })
+                else:
+                    # page.tsx: single GET route. Handler = `export default function ...`
+                    handler = ""
+                    if os.path.exists(file_path):
+                        try:
+                            with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                                src = fh.read()
+                            # export default function Name(...)
+                            m = re.search(r'export\s+default\s+(?:async\s+)?function\s+([A-Z]\w*)', src)
                             if m:
                                 handler = m.group(1)
-                    except OSError:
-                        pass
+                            else:
+                                # export default Name    |    export default const Name = ...
+                                m = re.search(r'export\s+default\s+([A-Z]\w*)\b', src)
+                                if m:
+                                    handler = m.group(1)
+                        except OSError:
+                            pass
 
-                if not handler:
-                    for fn in file_data.get("functions", []):
-                        name = fn.get("name", "")
-                        if name and name[0].isupper():
-                            handler = name
-                            break
-                if not handler:
-                    fns = file_data.get("functions", [])
-                    handler = fns[0]["name"] if fns else file_name
+                    if not handler:
+                        for fn in file_data.get("functions", []):
+                            name = fn.get("name", "")
+                            if name and name[0].isupper():
+                                handler = name
+                                break
+                    if not handler:
+                        fns = file_data.get("functions", [])
+                        handler = fns[0]["name"] if fns else file_name
 
-                key = f"GET|{route}"
-                if key not in seen:
-                    seen.add(key)
-                    routes.append({
-                        "method": "GET",
-                        "path": route,
-                        "handler": handler,
-                        "file": rel_path,
-                        "line": 0,
-                        "framework": "nextjs",
-                    })
+                    key = f"GET|{route}"
+                    if key not in seen:
+                        seen.add(key)
+                        routes.append({
+                            "method": "GET",
+                            "path": route,
+                            "handler": handler,
+                            "file": rel_path,
+                            "line": 0,
+                            "framework": "nextjs",
+                        })
 
         # ── Decorator-based routes (read from decorators on functions) ──
         for fn in file_data.get("functions", []):
