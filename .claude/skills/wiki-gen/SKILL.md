@@ -11,7 +11,8 @@ User types `/wiki` or asks "generate wiki", "document this codebase", "create do
 
 If `.cgc-index/module_contexts/` doesn't exist, run first:
 ```bash
-cgc-wiki index .
+wiki-forge init --no-llm .
+# Or: cgc-wiki index .
 ```
 
 ## Step 1: Read the index

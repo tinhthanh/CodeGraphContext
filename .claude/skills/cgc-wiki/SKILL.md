@@ -11,17 +11,17 @@ Generate comprehensive code documentation wiki from any codebase using CodeGraph
 ## Prerequisites
 
 ```bash
-pip install codegraphcontext-rust duckdb
+pip install wiki-forge    # CGC bundled (Rust + DuckDB)
 ```
 
 ## Quick Start
 
 ```bash
-# Index a codebase (no LLM, free, ~5-20s)
-cgc-wiki index /path/to/repo
+# Index + install AI IDE hooks (no LLM, free, ~5-20s)
+wiki-forge init --no-llm /path/to/repo
 
-# Generate wiki docs (needs LLM API key)
-cgc-wiki generate /path/to/repo --output ./wiki-output
+# Or use cgc-wiki directly
+cgc-wiki index /path/to/repo
 ```
 
 ## Step-by-Step Guide for AI Agents
