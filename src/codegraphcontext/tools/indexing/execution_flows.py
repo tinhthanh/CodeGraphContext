@@ -10,7 +10,9 @@ This gives AI agents/LLMs a "what happens when X is called" view.
 from __future__ import annotations
 
 import logging
+import os
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -138,6 +140,7 @@ def detect_execution_flows(
     call_groups: Tuple,
     max_flows: int = 300,
     max_depth: int = 10,
+    repo_path: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Detect execution flows from entry points through call graph.
 
@@ -146,11 +149,12 @@ def detect_execution_flows(
         call_groups: 6-tuple of call edge lists (fn_fn, fn_cls, ...)
         max_flows: Maximum number of flows to detect
         max_depth: Maximum BFS depth per flow
+        repo_path: If given, normalize all paths to relative
 
     Returns:
         List of flow dicts: {
             name: str,           # entry point name
-            entry_file: str,     # file path
+            entry_file: str,     # file path (relative if repo_path given)
             entry_line: int,     # line number
             entry_class: str,    # class context (if any)
             steps: [{name, file, line, depth}],  # ordered call chain
@@ -331,6 +335,20 @@ def detect_execution_flows(
             "step_count": len(steps),
             "score": score,
         })
+
+    # Normalize paths to relative if repo_path given
+    if repo_path:
+        repo_resolved = Path(repo_path).resolve()
+        for flow in flows:
+            try:
+                flow["entry_file"] = str(Path(flow["entry_file"]).relative_to(repo_resolved))
+            except (ValueError, TypeError):
+                pass
+            for step in flow.get("steps", []):
+                try:
+                    step["file"] = str(Path(step["file"]).relative_to(repo_resolved))
+                except (ValueError, TypeError):
+                    pass
 
     flows.sort(key=lambda x: (-x["score"], -x["step_count"]))
     logger.info("Detected %d execution flows from %d candidates", len(flows), len(candidates))

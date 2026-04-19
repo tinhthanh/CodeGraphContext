@@ -84,7 +84,7 @@ def cmd_index(args):
     from codegraphcontext.tools.indexing.route_extraction import extract_routes
     from codegraphcontext.tools.indexing.rationale_extraction import extract_rationales
 
-    flows = detect_execution_flows(valid, call_groups)
+    flows = detect_execution_flows(valid, call_groups, repo_path=repo_path)
     routes = extract_routes(valid, repo_path)
     rationales = extract_rationales(valid, repo_path)
 

@@ -278,6 +278,15 @@ class DuckDBGraphWriter:
                 c_cn.append(e.get("caller_name", "")); c_dn.append(e.get("called_name", ""))
                 caller_path = e.get("caller_file_path", "")
                 called_path = e.get("called_file_path", "")
+                # Normalize to relative paths
+                try:
+                    caller_path = str(Path(caller_path).relative_to(repo_path_obj)) if caller_path else ""
+                except ValueError:
+                    pass
+                try:
+                    called_path = str(Path(called_path).relative_to(repo_path_obj)) if called_path else ""
+                except ValueError:
+                    pass
                 c_cp.append(caller_path); c_dp.append(called_path)
                 c_ln.append(e.get("line_number", 0)); c_fcn.append(e.get("full_call_name", ""))
                 # Confidence: EXTRACTED if same file, INFERRED if cross-file
@@ -290,6 +299,15 @@ class DuckDBGraphWriter:
             parent_name = edge.get("parent_name", "")
             child_path = edge.get("child_file_path", "")
             parent_path = edge.get("parent_file_path", "")
+            # Normalize to relative paths
+            try:
+                child_path = str(Path(child_path).relative_to(repo_path_obj)) if child_path else ""
+            except ValueError:
+                pass
+            try:
+                parent_path = str(Path(parent_path).relative_to(repo_path_obj)) if parent_path else ""
+            except ValueError:
+                pass
             inh_child.append(f"{child_name}|{child_path}|0")
             inh_parent.append(f"{parent_name}|{parent_path}|0")
             inh_cn.append(child_name); inh_pn.append(parent_name)
@@ -418,7 +436,7 @@ class DuckDBGraphWriter:
         try:
             from ..execution_flows import detect_execution_flows
             import json as _json
-            flows = detect_execution_flows(parsed_results, call_groups)
+            flows = detect_execution_flows(parsed_results, call_groups, repo_path=str(repo_path_obj))
             if flows:
                 flow_rows = [
                     (f["name"], f["entry_file"], f["entry_line"],

@@ -32,18 +32,19 @@ EXT_LANG = {
     ".pl": "perl",
 }
 
-SKIP_PATTERNS = [
-    "node_modules", "__pycache__", "venv", ".venv", ".next", "dist",
-    "build", "target", "out", ".git", "vendor", ".min.js", ".bundle.js",
-    "__MACOSX", ".DS_Store",
-]
+from codegraphcontext.tools.indexing.constants import DEFAULT_IGNORE_PATTERNS
+
+import pathspec
+_IGNORE_SPEC = pathspec.PathSpec.from_lines("gitwildmatch", DEFAULT_IGNORE_PATTERNS)
 
 
 def discover_files(repo_path: str) -> list:
+    root = Path(repo_path).resolve()
     files = []
     for ext, lang in EXT_LANG.items():
-        for f in Path(repo_path).rglob(f"*{ext}"):
-            if not any(x in str(f) for x in SKIP_PATTERNS):
+        for f in root.rglob(f"*{ext}"):
+            rel = f.relative_to(root).as_posix()
+            if not _IGNORE_SPEC.match_file(rel):
                 files.append((str(f), lang))
     return files
 
@@ -84,7 +85,7 @@ def cmd_index(args):
     from codegraphcontext.tools.indexing.route_extraction import extract_routes
     from codegraphcontext.tools.indexing.rationale_extraction import extract_rationales
 
-    flows = detect_execution_flows(valid, call_groups)
+    flows = detect_execution_flows(valid, call_groups, repo_path=repo_path)
     routes = extract_routes(valid, repo_path)
     rationales = extract_rationales(valid, repo_path)
 
@@ -176,12 +177,36 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
 
     import re as _re
     _ACCESSOR_RE = _re.compile(r"^(get|set|is|has)[A-Z]")
+    # Java 14+ record component accessors: single lowercase word like name(), customerId()
+    # These have no get/set prefix but are pure accessors — filter from god nodes
+    _RECORD_ACCESSOR_RE = _re.compile(r"^[a-z][a-zA-Z]*$")
+    # Known meaningful single-word functions to keep (not record accessors)
+    _MEANINGFUL_NAMES = {
+        "main", "run", "start", "execute", "init", "setup", "configure",
+        "handle", "process", "validate", "create", "update", "delete",
+        "save", "load", "find", "search", "index", "render", "dispatch",
+        "schedule", "publish", "subscribe", "connect", "disconnect",
+        "authenticate", "authorize", "transform", "convert", "migrate",
+    }
 
     w = DuckDBGraphWriter(db_path)
     raw_top = w.get_top_connected(limit=50)
-    top = [t for t in raw_top
-           if t.get("name", "") not in _GOD_NODE_NOISE
-           and not _ACCESSOR_RE.match(t.get("name", ""))][:10]
+
+    def _is_noise(t):
+        name = t.get("name", "")
+        if name in _GOD_NODE_NOISE:
+            return True
+        if _ACCESSOR_RE.match(name):
+            return True
+        # Record accessor heuristic: short camelCase name, not meaningful
+        if (_RECORD_ACCESSOR_RE.match(name)
+            and name not in _MEANINGFUL_NAMES
+            and len(name) <= 20
+            and t.get("call_count", 0) >= 5):
+            return True
+        return False
+
+    top = [t for t in raw_top if not _is_noise(t)][:10]
     stats = w.get_stats()
     w.close()
 

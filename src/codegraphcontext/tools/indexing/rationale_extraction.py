@@ -98,11 +98,20 @@ def extract_rationales(
                                 text = text.encode("utf-8").decode("unicode_escape").encode("latin-1").decode("utf-8")
                             except (UnicodeDecodeError, UnicodeEncodeError):
                                 pass
-                        elif re.search(r'(?<![a-zA-Z])u[0-9a-fA-F]{4}', text):
+                        elif re.search(r'u[0-9a-fA-F]{4}', text):
+                            # Multi-pass: greedily replace uXXXX sequences
+                            # that decode to non-ASCII chars (Vietnamese, Latin Extended)
+                            def _decode_u(m):
+                                cp = int(m.group(1), 16)
+                                # Only replace if codepoint is non-ASCII (> 0x7F)
+                                # This avoids mangling ASCII like "url", "use"
+                                if cp > 0x7F:
+                                    return chr(cp)
+                                return m.group(0)
                             try:
                                 text = re.sub(
-                                    r'(?<![a-zA-Z])u([0-9a-fA-F]{4})',
-                                    lambda m: chr(int(m.group(1), 16)),
+                                    r'u([0-9a-fA-F]{4})',
+                                    _decode_u,
                                     text,
                                 )
                             except (ValueError, OverflowError):
