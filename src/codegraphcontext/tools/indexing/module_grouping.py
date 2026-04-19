@@ -73,6 +73,8 @@ def auto_group_modules(
     if not file_data:
         return []
 
+    all_rel_paths = list(file_data.keys())
+
     # ── Strategy 0: Detect build manifest modules ─────────────
     # Maven: top-level dirs with pom.xml or build.gradle
     # Node: package.json workspaces
@@ -120,7 +122,7 @@ def auto_group_modules(
 
     # If manifest modules found, use them for grouping
     if manifest_modules:
-        for rel_path in file_data:
+        for rel_path in all_rel_paths:
             assigned = False
             for mod_dir in sorted(manifest_modules.keys(), key=len, reverse=True):
                 if rel_path.startswith(mod_dir + "/") or rel_path.startswith(mod_dir + os.sep):
@@ -240,7 +242,6 @@ def auto_group_modules(
 
     for dir_name, files in sorted(merged.items(), key=lambda x: -len(x[1])):
         # Detect primary language
-        from collections import Counter
         lang_counts = Counter()
         classes = set()
         entry_funcs = []

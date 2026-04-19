@@ -215,12 +215,18 @@ def extract_routes(
                         if not path.startswith("/"):
                             path = "/" + path
 
-                        # Find handler: next function after this annotation
+                        # Find handler: closest function AFTER this annotation (within 5 lines)
                         handler = ""
+                        ann_line = i + 1
+                        best_fn = None
+                        best_dist = 999
                         for fn in file_data.get("functions", []):
-                            if fn.get("line_number", 0) > i + 1:
-                                handler = fn.get("name", "")
-                                break
+                            fn_line = fn.get("line_number", 0)
+                            if fn_line >= ann_line and (fn_line - ann_line) < best_dist:
+                                best_dist = fn_line - ann_line
+                                best_fn = fn
+                        if best_fn and best_dist <= 5:
+                            handler = best_fn.get("name", "")
 
                         key = f"{method}|{path}"
                         if key not in seen:
@@ -268,12 +274,18 @@ def extract_routes(
                             if not path:
                                 path = "/"
 
-                            # Find handler: next function
+                            # Find handler: closest function after annotation (within 5 lines)
                             handler = ""
+                            ann_line = i + 1
+                            best_fn = None
+                            best_dist = 999
                             for fn in file_data.get("functions", []):
-                                if fn.get("line_number", 0) >= i + 1:
-                                    handler = fn.get("name", "")
-                                    break
+                                fn_line = fn.get("line_number", 0)
+                                if fn_line >= ann_line and (fn_line - ann_line) < best_dist:
+                                    best_dist = fn_line - ann_line
+                                    best_fn = fn
+                            if best_fn and best_dist <= 5:
+                                handler = best_fn.get("name", "")
 
                             key = f"{method}|{path}"
                             if key not in seen:

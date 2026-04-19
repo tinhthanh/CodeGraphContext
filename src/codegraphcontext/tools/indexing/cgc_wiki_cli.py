@@ -143,8 +143,23 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
     """Generate GRAPH_REPORT.md (like Graphify)."""
     from codegraphcontext.tools.indexing.persistence.duckdb_writer import DuckDBGraphWriter
 
+    # God-node noise: skip accessors, test DSL, built-ins
+    _GOD_NODE_NOISE = {
+        "get", "set", "of", "put", "add", "remove", "size", "isEmpty",
+        "equals", "hashCode", "toString", "compareTo", "valueOf", "values",
+        "build", "builder", "clone", "close", "read", "write",
+        "it", "describe", "expect", "toBe", "toEqual", "assert",
+        "andExpect", "assertThat", "verify", "mock", "when", "given",
+        "mockResolvedValue", "mockReturnValue", "waitForTimeout",
+        "status", "ok", "body", "json", "parse", "stringify",
+        "log", "error", "warn", "info", "debug",
+        "getId", "getName", "getStatus", "getType", "getValue",
+        "setId", "setName", "setStatus", "setType", "setValue",
+    }
+
     w = DuckDBGraphWriter(db_path)
-    top = w.get_top_connected(limit=10)
+    raw_top = w.get_top_connected(limit=30)
+    top = [t for t in raw_top if t.get("name", "") not in _GOD_NODE_NOISE][:10]
     stats = w.get_stats()
     w.close()
 
