@@ -381,6 +381,23 @@ def extract_routes(
                     if not handler:
                         handler = call.get("name", "")
 
+                    # For decorator-style calls (@router.get, @app.post) the parsed call
+                    # name is an HTTP verb — not a real handler. Replace with the function
+                    # declared immediately AFTER the decorator line (FastAPI/Flask pattern).
+                    _HTTP_VERBS = {"get", "post", "put", "delete", "patch", "use", "all",
+                                   "options", "head"}
+                    if not handler or handler.lower() in _HTTP_VERBS:
+                        call_line = call.get("line_number", 0) or 0
+                        best_fn = None
+                        best_dist = 999
+                        for fn in file_data.get("functions", []):
+                            fn_line = fn.get("line_number", 0) or 0
+                            if fn_line > call_line and (fn_line - call_line) < best_dist:
+                                best_dist = fn_line - call_line
+                                best_fn = fn
+                        if best_fn and best_dist <= 5:
+                            handler = best_fn.get("name", "") or handler
+
                     key = f"{method}|{path}"
                     if key not in seen:
                         seen.add(key)

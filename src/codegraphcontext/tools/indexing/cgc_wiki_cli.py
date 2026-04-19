@@ -186,6 +186,15 @@ def _generate_report(writer, db_path, repo_path, report_path, counts, flows, rou
         # React hooks used everywhere (too noisy to count as "hub")
         "useState", "useEffect", "useCallback", "useMemo", "useRef",
         "useContext", "useReducer", "useLayoutEffect",
+        # Python stdlib + common test DSL
+        "uuid4", "uuid1", "print", "len", "str", "int", "float", "dict",
+        "list", "tuple", "range", "isinstance", "hasattr", "getattr",
+        "setattr", "type", "enumerate", "zip", "sorted", "reversed",
+        "MagicMock", "AsyncMock", "Mock", "patch",
+        "pytest", "fixture", "raises", "mark",
+        # SQLAlchemy declarative column/migration noise (Alembic templates)
+        "Column", "String", "Integer", "Text", "Boolean", "DateTime",
+        "ForeignKey", "Index", "UniqueConstraint", "Table",
     }
 
     import re as _re

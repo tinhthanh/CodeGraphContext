@@ -20,6 +20,14 @@ DEFAULT_IGNORE_PATTERNS = [
     "out/",
     ".git/",
     "__pycache__/",
+    # Auto-generated migrations (Alembic, Django, Prisma, etc.)
+    # Noise in god-nodes (SQLAlchemy Column/Table declarations).
+    # Migrations themselves are important but not source code — keep in source
+    # control, exclude from graph index.
+    "alembic/versions/",
+    "migrations/",
+    "prisma/migrations/",
+    "db/migrate/",
     # Vendor / bundled code (not project source)
     "vendor/",
     ".next/",
