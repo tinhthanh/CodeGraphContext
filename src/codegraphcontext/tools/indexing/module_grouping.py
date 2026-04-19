@@ -11,10 +11,11 @@ Grouping strategy:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
-from collections import defaultdict
+from collections import defaultdict, Counter
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
@@ -71,6 +72,98 @@ def auto_group_modules(
 
     if not file_data:
         return []
+
+    # ── Strategy 0: Detect build manifest modules ─────────────
+    # Maven: top-level dirs with pom.xml or build.gradle
+    # Node: package.json workspaces
+    manifest_modules: Dict[str, List[str]] = {}
+
+    repo = Path(repo_path)
+    # Check for Maven/Gradle multi-module
+    for pom in repo.glob("*/pom.xml"):
+        mod_dir = pom.parent.name
+        manifest_modules[mod_dir] = []
+    for gradle in repo.glob("*/build.gradle"):
+        mod_dir = gradle.parent.name
+        if mod_dir not in manifest_modules:
+            manifest_modules[mod_dir] = []
+    for gradle in repo.glob("*/build.gradle.kts"):
+        mod_dir = gradle.parent.name
+        if mod_dir not in manifest_modules:
+            manifest_modules[mod_dir] = []
+
+    # Check for Node.js workspaces (apps/*, libs/*, packages/*)
+    pkg_json = repo / "package.json"
+    if pkg_json.exists():
+        try:
+            pkg = json.loads(pkg_json.read_text())
+            workspaces = pkg.get("workspaces", [])
+            if isinstance(workspaces, dict):
+                workspaces = workspaces.get("packages", [])
+            for ws in workspaces:
+                ws_base = ws.replace("/*", "").replace("*", "")
+                for ws_dir in repo.glob(f"{ws_base}/*/package.json"):
+                    mod_dir = str(ws_dir.parent.relative_to(repo))
+                    manifest_modules[mod_dir] = []
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # NX: check nx.json or project.json in subdirs
+    for proj_json in repo.glob("*/project.json"):
+        mod_dir = str(proj_json.parent.relative_to(repo))
+        if mod_dir not in manifest_modules:
+            manifest_modules[mod_dir] = []
+    for proj_json in repo.glob("*/*/project.json"):
+        mod_dir = str(proj_json.parent.relative_to(repo))
+        if mod_dir not in manifest_modules:
+            manifest_modules[mod_dir] = []
+
+    # If manifest modules found, use them for grouping
+    if manifest_modules:
+        for rel_path in file_data:
+            assigned = False
+            for mod_dir in sorted(manifest_modules.keys(), key=len, reverse=True):
+                if rel_path.startswith(mod_dir + "/") or rel_path.startswith(mod_dir + os.sep):
+                    manifest_modules[mod_dir].append(rel_path)
+                    assigned = True
+                    break
+            if not assigned:
+                manifest_modules.setdefault("(root)", []).append(rel_path)
+
+        # Remove empty modules, use TOP-LEVEL dir as slug (not "src")
+        manifest_modules = {k: v for k, v in manifest_modules.items() if v}
+
+        if manifest_modules:
+            logger.info("Detected %d manifest-based modules: %s",
+                        len(manifest_modules), list(manifest_modules.keys()))
+
+            modules = []
+            for mod_dir, files in sorted(manifest_modules.items(), key=lambda x: -len(x[1])):
+                # Use module dir name as slug (gateway-api, service-pet, etc.)
+                slug = re.sub(r"[^a-z0-9]+", "-", mod_dir.lower()).strip("-") or "root"
+                name = _humanize_dir(mod_dir.split("/")[0])
+
+                lang_counts = Counter()
+                classes = set()
+                for f in files:
+                    data = file_data.get(f, {})
+                    lang = data.get("lang", "")
+                    if lang: lang_counts[lang] += 1
+                    for cls in data.get("classes", []):
+                        classes.add(cls.get("name", ""))
+
+                modules.append({
+                    "name": name,
+                    "slug": slug,
+                    "dir": mod_dir,
+                    "files": sorted(files),
+                    "file_count": len(files),
+                    "primary_lang": lang_counts.most_common(1)[0][0] if lang_counts else "",
+                    "classes": sorted(classes - {""}),
+                    "entry_functions": [],
+                })
+
+            return modules
 
     # ── Strategy 1: Group by meaningful directory ──────────────
     dir_groups: Dict[str, List[str]] = defaultdict(list)
@@ -185,4 +278,68 @@ def auto_group_modules(
         })
 
     logger.info("Auto-grouped %d files into %d modules", len(file_data), len(modules))
+    return modules
+
+
+def _build_module_metadata(
+    groups: Dict[str, List[str]],
+    file_data: Dict[str, Dict],
+    min_files: int = 2,
+) -> List[Dict[str, Any]]:
+    """Build module metadata from grouped files."""
+    # Merge tiny groups
+    merged: Dict[str, List[str]] = {}
+    tiny_files = []
+    for name, files in groups.items():
+        if len(files) >= min_files:
+            merged[name] = files
+        else:
+            tiny_files.extend(files)
+    if tiny_files:
+        merged["other"] = tiny_files
+
+    modules = []
+    for dir_name, files in sorted(merged.items(), key=lambda x: -len(x[1])):
+        lang_counts = Counter()
+        classes = set()
+        for f in files:
+            data = file_data.get(f, {})
+            lang = data.get("lang", "")
+            if lang:
+                lang_counts[lang] += 1
+            for cls in data.get("classes", []):
+                classes.add(cls.get("name", ""))
+
+        primary_lang = lang_counts.most_common(1)[0][0] if lang_counts else ""
+
+        # Use full dir path for name (not just last segment)
+        # e.g., "gateway-api/src" → "Gateway Api" with slug "gateway-api"
+        dir_parts = dir_name.split("/")
+        # For manifest modules, use top-level dir (gateway-api, service-pet, etc.)
+        name_source = dir_parts[0] if dir_parts[0].lower() not in _SKIP_DIR_NAMES else dir_name
+        name = _humanize_dir(name_source)
+        slug = re.sub(r"[^a-z0-9]+", "-", name_source.lower()).strip("-")
+
+        # Ensure unique slugs
+        existing_slugs = {m["slug"] for m in modules}
+        if slug in existing_slugs:
+            if len(dir_parts) > 1:
+                full = "-".join(dir_parts)
+                slug = re.sub(r"[^a-z0-9]+", "-", full.lower()).strip("-")
+                name = _humanize_dir(full)
+            else:
+                slug = f"{slug}-{len(modules)}"
+
+        modules.append({
+            "name": name,
+            "slug": slug,
+            "dir": dir_name,
+            "files": sorted(files),
+            "file_count": len(files),
+            "primary_lang": primary_lang,
+            "classes": sorted(classes - {""}),
+            "entry_functions": [],
+        })
+
+    logger.info("Built %d modules from manifest", len(modules))
     return modules
