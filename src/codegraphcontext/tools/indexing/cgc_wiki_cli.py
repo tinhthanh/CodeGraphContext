@@ -457,13 +457,14 @@ def _install_pretool_hook(settings_path: Path):
     hooks = settings.setdefault("hooks", {})
     pre_tool = hooks.setdefault("PreToolUse", [])
 
-    # Check if already installed
-    for hook in pre_tool:
-        hooks_list = hook.get("hooks", [])
-        for h in hooks_list:
-            if "cgc-wiki" in str(h.get("command", "")):
-                return  # already installed
+    # Remove any existing cgc-wiki hooks (old or new format)
+    pre_tool[:] = [
+        hook for hook in pre_tool
+        if "cgc-wiki" not in str(hook.get("command", ""))
+        and "cgc-wiki" not in str(hook.get("hooks", []))
+    ]
 
+    # Add with correct format
     pre_tool.append({
         "matcher": "Glob|Grep|Read",
         "hooks": [
