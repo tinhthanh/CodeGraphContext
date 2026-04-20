@@ -342,6 +342,31 @@ def cmd_install(args):
         _install_pretool_hook(settings_path)
         print(f"  PreToolUse hook → {settings_path}")
 
+    elif platform == "antigravity":
+        # 1. Skill
+        skill_dir = Path(".") / ".agents" / "skills" / "wiki"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(_antigravity_skill())
+        print(f"  Skill → {skill_dir / 'SKILL.md'}")
+
+        # 2. Rule
+        rules_dir = Path(".") / ".agents" / "rules"
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        (rules_dir / "cgc-wiki.md").write_text(_antigravity_rule())
+        print(f"  Rule → {rules_dir / 'cgc-wiki.md'}")
+
+        # 3. AGENTS.md (cross-tool)
+        agents_md = Path(".") / "AGENTS.md"
+        section = _agents_md_section()
+        if agents_md.exists():
+            content = agents_md.read_text()
+            if "cgc-wiki" not in content:
+                agents_md.write_text(content + "\n\n" + section)
+                print(f"  AGENTS.md updated")
+        else:
+            agents_md.write_text(section)
+            print(f"  AGENTS.md created")
+
     elif platform == "cursor":
         rules_dir = Path(".") / ".cursor" / "rules"
         rules_dir.mkdir(parents=True, exist_ok=True)
@@ -418,6 +443,8 @@ def _detect_platform() -> str:
     home = Path.home()
     if (home / ".claude").exists():
         return "claude"
+    if (home / ".antigravity").exists() or Path(".agents").exists():
+        return "antigravity"
     if (home / ".cursor").exists() or Path(".cursor").exists():
         return "cursor"
     if (home / ".codex").exists():
@@ -464,6 +491,68 @@ Before answering architecture or codebase questions:
 1. Read `.cgc-index/GRAPH_REPORT.md` for god nodes, routes, flows
 2. Use the graph structure instead of grepping raw files
 3. Type `/wiki` to generate wiki documentation
+"""
+
+
+def _antigravity_skill() -> str:
+    return """---
+name: wiki
+description: Generate code documentation wiki from CGC knowledge graph
+trigger: user asks to generate wiki, document codebase, create docs, or types /wiki
+---
+
+# /wiki — Generate Code Documentation Wiki
+
+Generate comprehensive wiki documentation using pre-computed module contexts.
+**Zero LLM API cost** — uses your IDE's built-in AI.
+
+## Prerequisites
+
+If `.cgc-index/module_contexts/` doesn't exist, run first:
+```bash
+wiki-forge init --no-llm .
+```
+
+## Step 1: Read the index
+
+Read `.cgc-index/module_contexts/index.md` to see all modules.
+
+## Step 2: Generate docs for each module
+
+For each module listed in index.md:
+1. Read `.cgc-index/module_contexts/{slug}.md`
+2. The file contains ALL context needed: functions, classes, routes, flows, rationale, source code
+3. Follow the "Instructions for AI Wiki Generator" at the bottom of each file
+4. Write the doc to `wiki-output/{slug}.md`
+
+**Important:** Process modules ONE AT A TIME. Read context → generate doc → move to next.
+
+## Step 3: Generate overview
+
+After all modules are done, generate `wiki-output/overview.md`:
+1. Read `.cgc-index/GRAPH_REPORT.md` for god nodes + summary
+2. List all modules with brief descriptions
+3. Include a Mermaid architecture diagram
+4. Link to each module doc using `[Module Name](module-slug.md)`
+"""
+
+
+def _antigravity_rule() -> str:
+    return """---
+description: Use CGC wiki before searching raw files
+alwaysApply: true
+---
+
+This project has a CGC knowledge graph at `.cgc-index/`.
+
+Before answering architecture or codebase questions:
+1. First check if `wiki-output/` exists — if yes, read `wiki-output/overview.md` then search relevant docs
+2. If no wiki, read `.cgc-index/GRAPH_REPORT.md` for god nodes, routes, flows
+3. Use graph data instead of grepping raw files
+
+Commands:
+- `/wiki` — generate wiki documentation (reads module_contexts/, writes wiki-output/)
+- `wiki-forge init --no-llm .` — rebuild index after code changes
 """
 
 
