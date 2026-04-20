@@ -504,51 +504,100 @@ trigger: user asks to generate wiki, document codebase, create docs, or types /w
 # /wiki — Generate Code Documentation Wiki
 
 Generate comprehensive wiki documentation using pre-computed module contexts.
+**Zero LLM API cost** — uses your IDE's built-in AI.
 
 ## CRITICAL RULES
 
-- **DO NOT write shell scripts, Python scripts, or call external CLIs (claude, node, etc.)** to generate docs.
-- **DO NOT generate filler text or repetitive adverbs.** If you run low on context, write shorter docs but keep them accurate.
-- Each doc must have real architectural analysis, not just copy-paste from context.
-- Keep each doc **concise but complete** — 50-150 lines max per doc.
-- When splitting work, use **Antigravity's built-in Agent Manager** to dispatch sub-agents. Do NOT create bash scripts or invoke external tools.
+- **DO NOT write shell scripts, Python scripts, or call external CLIs.** YOU and your subagents must read context files and write docs using AI reasoning.
+- **DO NOT generate filler text or repetitive adverbs.** Write concise, accurate docs. If uncertain, write less but keep it correct.
+- Each doc must have real architectural analysis with Mermaid diagrams.
+- Keep each doc **50-150 lines** max.
 
 ## Prerequisites
 
-If `.cgc-index/module_contexts/` doesn't exist, run first:
+If `.cgc-index/module_contexts/` doesn't exist:
 ```bash
 wiki-forge init
 ```
 
-## Step 1: Read the index
+## Step 1: Read the index + plan chunks
 
-Read `.cgc-index/module_contexts/index.md` to get the module list.
+1. Read `.cgc-index/module_contexts/index.md`
+2. Count total modules
+3. Create `wiki-output/` directory
+4. If **≤ 10 modules**: process all yourself (go to Step 2A)
+5. If **> 10 modules**: split into chunks of 8-10 modules each, grouped by related slugs (go to Step 2B)
 
-## Step 2: Generate docs (split into sub-agents for large projects)
+## Step 2A: Sequential generation (≤ 10 modules)
 
-If there are **more than 15 modules**, use the **Agent Manager** (top-right button) to dispatch sub-agents:
-- Divide modules into groups of **max 10 each**
-- Open Agent Manager and create one agent per group
-- Each agent prompt should be:
+For each module in index.md:
+1. Read `.cgc-index/module_contexts/{slug}.md`
+2. Write `wiki-output/{slug}.md` with sections below
+3. Move to next module
 
-> Read these module context files from `.cgc-index/module_contexts/` and generate wiki docs in `wiki-output/`:
-> [list of 10 slugs]
->
-> For each module: read `module_contexts/{slug}.md`, then write `wiki-output/{slug}.md` with sections:
-> Purpose, Architecture (Mermaid), API Endpoints (table), Execution Flows (steps), Design Decisions, Dependencies.
-> Keep each doc 50-150 lines. Do NOT write scripts.
+## Step 2B: Parallel subagent dispatch (> 10 modules)
 
-**Launch all agents from the Agent Manager UI.** Do NOT create shell scripts or call external CLIs.
+**Split into chunks of 8-10 modules. Dispatch ALL subagents in a SINGLE message.**
 
-If **15 modules or fewer**, process them all yourself sequentially in this conversation.
+This is critical — if you make one Agent call, wait, then make another, they run sequentially. All Agent tool calls must be in ONE response for true parallelism.
+
+Example for 30 modules → 3 chunks:
+```
+[Agent tool call 1: modules 1-10, subagent_type="general-purpose"]
+[Agent tool call 2: modules 11-20, subagent_type="general-purpose"]
+[Agent tool call 3: modules 21-30, subagent_type="general-purpose"]
+```
+All three in ONE message. NOT three separate messages.
+
+**IMPORTANT:** Use `subagent_type="general-purpose"` — NOT `Explore` (read-only, cannot write files).
+
+Each subagent receives this prompt (substitute MODULE_LIST and CHUNK_NUM):
+
+```
+You are a wiki documentation subagent (chunk CHUNK_NUM).
+
+Read these module context files from `.cgc-index/module_contexts/` and generate wiki docs in `wiki-output/`:
+MODULE_LIST
+
+For EACH module:
+1. Read `.cgc-index/module_contexts/{slug}.md` — contains all context needed
+2. Follow "Instructions for AI Wiki Generator" at the bottom of the context file
+3. Write `wiki-output/{slug}.md` with these sections:
+
+## Required sections per doc:
+- **Purpose** — what this module does and why (2-3 sentences)
+- **Architecture** — key classes and how they relate (include Mermaid diagram)
+- **API Endpoints** — markdown table: Method | Path | Description (skip if 0 routes)
+- **Execution Flows** — step-by-step what happens when key functions are called (top 2-3 flows)
+- **Design Decisions** — rationale from [IMPORTANT], [WARNING], [NOTE] source comments
+- **Dependencies** — what this module depends on and what depends on it
+
+Rules:
+- 50-150 lines per doc. Be concise but complete.
+- DO NOT generate filler text or repetitive adverbs.
+- DO NOT write scripts. Read each context file and write each doc with AI reasoning.
+- Use confidence tags: EXTRACTED = certain (AST), INFERRED = cross-file resolution.
+```
+
+**Step 2B-verify: Check results**
+
+After all subagents complete:
+- List `wiki-output/` directory
+- Count generated files vs expected
+- If any are missing, generate them yourself
+- If any file is suspiciously short (< 10 lines), regenerate it
 
 ## Step 3: Generate overview
 
-After all module docs exist in `wiki-output/`, generate `wiki-output/overview.md`:
-1. Read `.cgc-index/GRAPH_REPORT.md` for god nodes + summary
-2. List all modules with brief descriptions
-3. Include a Mermaid architecture diagram
-4. Link to each module doc using `[[module-slug]]`
+After ALL module docs exist, generate `wiki-output/overview.md`:
+1. Read `.cgc-index/GRAPH_REPORT.md` for god nodes + summary stats
+2. Write overview with:
+   - Project summary (what it does, tech stack)
+   - Mermaid architecture diagram (max 10 nodes)
+   - Module index table: Module | Files | Functions | Key Feature
+   - Link each module using `[Module Name](slug.md)`
+   - God nodes section (most connected functions/classes)
+   - API surface summary (total routes by area)
 """
 
 
