@@ -507,10 +507,11 @@ Generate comprehensive wiki documentation using pre-computed module contexts.
 
 ## CRITICAL RULES
 
-- **DO NOT write scripts or code to generate docs.** YOU must read each context file and write each doc yourself using AI reasoning.
+- **DO NOT write shell scripts, Python scripts, or call external CLIs (claude, node, etc.)** to generate docs.
 - **DO NOT generate filler text or repetitive adverbs.** If you run low on context, write shorter docs but keep them accurate.
 - Each doc must have real architectural analysis, not just copy-paste from context.
 - Keep each doc **concise but complete** — 50-150 lines max per doc.
+- When splitting work, use **Antigravity's built-in Agent Manager** to dispatch sub-agents. Do NOT create bash scripts or invoke external tools.
 
 ## Prerequisites
 
@@ -523,12 +524,12 @@ wiki-forge init
 
 Read `.cgc-index/module_contexts/index.md` to get the module list.
 
-## Step 2: Split work across agents (for large projects)
+## Step 2: Generate docs (split into sub-agents for large projects)
 
-If there are **more than 15 modules**, split work:
-- Count total modules from index.md
-- Divide into groups of **max 10 modules each**
-- For **each group**, launch a **separate agent** with this prompt:
+If there are **more than 15 modules**, use the **Agent Manager** (top-right button) to dispatch sub-agents:
+- Divide modules into groups of **max 10 each**
+- Open Agent Manager and create one agent per group
+- Each agent prompt should be:
 
 > Read these module context files from `.cgc-index/module_contexts/` and generate wiki docs in `wiki-output/`:
 > [list of 10 slugs]
@@ -537,7 +538,9 @@ If there are **more than 15 modules**, split work:
 > Purpose, Architecture (Mermaid), API Endpoints (table), Execution Flows (steps), Design Decisions, Dependencies.
 > Keep each doc 50-150 lines. Do NOT write scripts.
 
-If **15 modules or fewer**, process them all yourself sequentially.
+**Launch all agents from the Agent Manager UI.** Do NOT create shell scripts or call external CLIs.
+
+If **15 modules or fewer**, process them all yourself sequentially in this conversation.
 
 ## Step 3: Generate overview
 
