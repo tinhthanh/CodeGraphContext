@@ -138,18 +138,38 @@ def extract_operational_params(
     params: List[Dict[str, Any]] = []
     seen: set = set()  # deduplicate
 
+    # Pre-filter: only scan files likely to have config values
+    # (files with config-like variable names, or Java/Python config files)
+    _CONFIG_PATH_HINTS = {"config", "setting", "constant", "env", "properties"}
+    files_to_scan = []
     for file_data in parsed_results:
         if "error" in file_data:
             continue
-
         file_path = file_data.get("path", "")
         ext = Path(file_path).suffix.lower()
-
-        if ext not in _SCAN_EXTENSIONS:
+        if ext not in _SCAN_EXTENSIONS or not os.path.exists(file_path):
             continue
+        # Scan if: has config-like variables, or path contains config hints
+        has_config_var = any(
+            _NAME_PATTERN.search(v.get("name", ""))
+            for v in file_data.get("variables", [])
+        )
+        path_lower = file_path.lower()
+        has_config_path = any(h in path_lower for h in _CONFIG_PATH_HINTS)
+        # Java/Python files with decorators (@Scheduled, @Retryable)
+        has_decorators = any(
+            any(d for d in f.get("decorators", []) or []
+                if any(k in str(d).lower() for k in ("scheduled", "retryable", "backoff", "cacheable")))
+            for f in file_data.get("functions", [])
+        )
+        if has_config_var or has_config_path or has_decorators:
+            files_to_scan.append(file_data)
 
-        if not os.path.exists(file_path):
-            continue
+    logger.debug("op_params: scanning %d/%d files (pre-filtered)", len(files_to_scan), len(parsed_results))
+
+    for file_data in files_to_scan:
+        file_path = file_data.get("path", "")
+        ext = Path(file_path).suffix.lower()
 
         try:
             rel_path = os.path.relpath(file_path, repo_path)

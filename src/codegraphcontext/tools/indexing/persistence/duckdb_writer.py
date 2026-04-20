@@ -317,6 +317,7 @@ class DuckDBGraphWriter:
             inh_cp.append(child_path); inh_pp.append(parent_path)
 
         # ── Write Parquet ────────────────────────────────────────────
+        _t_pq = time.perf_counter()
         pq_dir = tempfile.mkdtemp(prefix="cgc_pq_")
 
         pq.write_table(pa.table({
@@ -382,7 +383,10 @@ class DuckDBGraphWriter:
         if on_progress:
             on_progress(total * 2 // 3, total, "Loading into DuckDB...")
 
+        logger.info("  [timing] parquet_write: %.1fs", time.perf_counter() - _t_pq)
+
         # ── DROP + COPY FROM ─────────────────────────────────────────
+        _t_db = time.perf_counter()
         c = self._conn
 
         # Drop existing data
@@ -435,7 +439,10 @@ class DuckDBGraphWriter:
         c.execute("CREATE INDEX IF NOT EXISTS idx_fc_uid ON file_contains(symbol_uid)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_imp_file ON imports(file_path)")
 
+        logger.info("  [timing] duckdb_load: %.1fs", time.perf_counter() - _t_db)
+
         # ── Detect execution flows ────────────────────────────────
+        _t = time.perf_counter()
         try:
             from ..execution_flows import detect_execution_flows
             import json as _json
@@ -455,7 +462,10 @@ class DuckDBGraphWriter:
             logger.debug("Execution flow detection failed: %s", exc)
             flows = []
 
+        logger.info("  [timing] execution_flows: %.1fs", time.perf_counter() - _t)
+
         # ── Detect API routes ────────────────────────────────────
+        _t = time.perf_counter()
         detected_routes = []
         try:
             from ..route_extraction import extract_routes
@@ -470,7 +480,10 @@ class DuckDBGraphWriter:
         except Exception as exc:
             logger.debug("Route extraction failed: %s", exc)
 
+        logger.info("  [timing] route_extraction: %.1fs", time.perf_counter() - _t)
+
         # ── Extract design rationale comments ─────────────────────
+        _t = time.perf_counter()
         detected_rationales = []
         try:
             from ..rationale_extraction import extract_rationales
@@ -484,7 +497,10 @@ class DuckDBGraphWriter:
         except Exception as exc:
             logger.debug("Rationale extraction failed: %s", exc)
 
+        logger.info("  [timing] rationale_extraction: %.1fs", time.perf_counter() - _t)
+
         # ── Extract operational parameters ──────────────────────────
+        _t = time.perf_counter()
         detected_op_params = []
         try:
             from ..op_param_extraction import extract_operational_params
@@ -498,6 +514,8 @@ class DuckDBGraphWriter:
                 )
         except Exception as exc:
             logger.debug("Operational param extraction failed: %s", exc)
+
+        logger.info("  [timing] op_param_extraction: %.1fs", time.perf_counter() - _t)
 
         # ── Post-process: fill inheritance from classes.bases ──────
         try:
