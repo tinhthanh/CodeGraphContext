@@ -463,7 +463,7 @@ This project has a CGC knowledge graph at `.cgc-index/`.
 
 ### Commands:
 - `/wiki` — generate wiki documentation (reads module_contexts/, writes wiki-output/)
-- `wiki-forge init --no-llm .` — rebuild index after code changes (or `cgc-wiki index .`)
+- `wiki-forge init` — rebuild index after code changes (or `cgc-wiki index .`)
 - `cgc-wiki search-index .` — rebuild search index after wiki generation
 - `cgc-wiki query . "search term"` — search symbols in the graph
 """
@@ -475,7 +475,7 @@ This project has a CGC knowledge graph at `.cgc-index/`.
 Rules:
 - Before answering architecture questions, read `.cgc-index/GRAPH_REPORT.md`
 - The report contains: god nodes, API routes, execution flows, design rationale
-- After modifying code, run `wiki-forge init --no-llm .` to rebuild (or `cgc-wiki index .`)
+- After modifying code, run `wiki-forge init` to rebuild (or `cgc-wiki index .`)
 """
 
 
@@ -510,7 +510,7 @@ Generate comprehensive wiki documentation using pre-computed module contexts.
 
 If `.cgc-index/module_contexts/` doesn't exist, run first:
 ```bash
-wiki-forge init --no-llm .
+wiki-forge init
 ```
 
 ## Step 1: Read the index
@@ -552,7 +552,7 @@ Before answering architecture or codebase questions:
 
 Commands:
 - `/wiki` — generate wiki documentation (reads module_contexts/, writes wiki-output/)
-- `wiki-forge init --no-llm .` — rebuild index after code changes
+- `wiki-forge init` — rebuild index after code changes
 """
 
 
