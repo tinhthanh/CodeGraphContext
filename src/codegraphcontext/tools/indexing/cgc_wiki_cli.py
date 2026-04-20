@@ -508,9 +508,9 @@ Generate comprehensive wiki documentation using pre-computed module contexts.
 ## CRITICAL RULES
 
 - **DO NOT write scripts or code to generate docs.** YOU must read each context file and write each doc yourself using AI reasoning.
-- **Process ALL modules** — do not stop halfway. If there are 50 modules, generate 50 docs.
-- Process in batches of 5-10 modules. After each batch, continue immediately to the next batch without asking.
+- **DO NOT generate filler text or repetitive adverbs.** If you run low on context, write shorter docs but keep them accurate.
 - Each doc must have real architectural analysis, not just copy-paste from context.
+- Keep each doc **concise but complete** — 50-150 lines max per doc.
 
 ## Prerequisites
 
@@ -521,31 +521,31 @@ wiki-forge init
 
 ## Step 1: Read the index
 
-Read `.cgc-index/module_contexts/index.md` to see all modules.
+Read `.cgc-index/module_contexts/index.md` to get the module list.
 
-## Step 2: Generate docs for each module (batch of 5-10)
+## Step 2: Split work across agents (for large projects)
 
-For each module listed in index.md:
-1. Read `.cgc-index/module_contexts/{slug}.md`
-2. The file contains ALL context: functions, classes, routes, flows, rationale, source code
-3. Follow the "Instructions for AI Wiki Generator" at the bottom
-4. Write comprehensive doc to `wiki-output/{slug}.md` covering:
-   - **Purpose** — what this module does and why
-   - **Architecture** — key classes and relationships (Mermaid diagram)
-   - **API Endpoints** — table with method/path/description
-   - **Execution Flows** — step-by-step what happens when key functions are called
-   - **Design Decisions** — rationale from source comments (IMPORTANT/WARNING/NOTE)
-   - **Dependencies** — what this module depends on and what depends on it
+If there are **more than 15 modules**, split work:
+- Count total modules from index.md
+- Divide into groups of **max 10 modules each**
+- For **each group**, launch a **separate agent** with this prompt:
 
-After each batch of 5-10 modules, **continue immediately** to the next batch. Do not stop or ask for confirmation.
+> Read these module context files from `.cgc-index/module_contexts/` and generate wiki docs in `wiki-output/`:
+> [list of 10 slugs]
+>
+> For each module: read `module_contexts/{slug}.md`, then write `wiki-output/{slug}.md` with sections:
+> Purpose, Architecture (Mermaid), API Endpoints (table), Execution Flows (steps), Design Decisions, Dependencies.
+> Keep each doc 50-150 lines. Do NOT write scripts.
+
+If **15 modules or fewer**, process them all yourself sequentially.
 
 ## Step 3: Generate overview
 
-After ALL modules are done, generate `wiki-output/overview.md`:
+After all module docs exist in `wiki-output/`, generate `wiki-output/overview.md`:
 1. Read `.cgc-index/GRAPH_REPORT.md` for god nodes + summary
 2. List all modules with brief descriptions
 3. Include a Mermaid architecture diagram
-4. Link to each module doc using `[Module Name](module-slug.md)`
+4. Link to each module doc using `[[module-slug]]`
 """
 
 
