@@ -504,7 +504,13 @@ trigger: user asks to generate wiki, document codebase, create docs, or types /w
 # /wiki — Generate Code Documentation Wiki
 
 Generate comprehensive wiki documentation using pre-computed module contexts.
-**Zero LLM API cost** — uses your IDE's built-in AI.
+
+## CRITICAL RULES
+
+- **DO NOT write scripts or code to generate docs.** YOU must read each context file and write each doc yourself using AI reasoning.
+- **Process ALL modules** — do not stop halfway. If there are 50 modules, generate 50 docs.
+- Process in batches of 5-10 modules. After each batch, continue immediately to the next batch without asking.
+- Each doc must have real architectural analysis, not just copy-paste from context.
 
 ## Prerequisites
 
@@ -517,19 +523,25 @@ wiki-forge init
 
 Read `.cgc-index/module_contexts/index.md` to see all modules.
 
-## Step 2: Generate docs for each module
+## Step 2: Generate docs for each module (batch of 5-10)
 
 For each module listed in index.md:
 1. Read `.cgc-index/module_contexts/{slug}.md`
-2. The file contains ALL context needed: functions, classes, routes, flows, rationale, source code
-3. Follow the "Instructions for AI Wiki Generator" at the bottom of each file
-4. Write the doc to `wiki-output/{slug}.md`
+2. The file contains ALL context: functions, classes, routes, flows, rationale, source code
+3. Follow the "Instructions for AI Wiki Generator" at the bottom
+4. Write comprehensive doc to `wiki-output/{slug}.md` covering:
+   - **Purpose** — what this module does and why
+   - **Architecture** — key classes and relationships (Mermaid diagram)
+   - **API Endpoints** — table with method/path/description
+   - **Execution Flows** — step-by-step what happens when key functions are called
+   - **Design Decisions** — rationale from source comments (IMPORTANT/WARNING/NOTE)
+   - **Dependencies** — what this module depends on and what depends on it
 
-**Important:** Process modules ONE AT A TIME. Read context → generate doc → move to next.
+After each batch of 5-10 modules, **continue immediately** to the next batch. Do not stop or ask for confirmation.
 
 ## Step 3: Generate overview
 
-After all modules are done, generate `wiki-output/overview.md`:
+After ALL modules are done, generate `wiki-output/overview.md`:
 1. Read `.cgc-index/GRAPH_REPORT.md` for god nodes + summary
 2. List all modules with brief descriptions
 3. Include a Mermaid architecture diagram
