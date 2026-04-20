@@ -317,7 +317,7 @@ def cmd_install(args):
 
     if platform == "claude":
         # 1. Copy skill
-        skill_dir = home / ".claude" / "skills" / "cgc-wiki"
+        skill_dir = home / ".claude" / "skills" / "wiki"
         skill_dir.mkdir(parents=True, exist_ok=True)
         if skill_src.exists():
             (skill_dir / "SKILL.md").write_text(skill_src.read_text())
