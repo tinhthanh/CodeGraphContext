@@ -726,52 +726,80 @@ Create: `wiki/sources/`, `wiki/entities/`, `wiki/concepts/`, `wiki/syntheses/`
 Copy ALL wiki-output/*.md files to wiki/sources/ — these are code-to-doc modules.
 
 ### Entities (wiki/entities/)
-Extract technologies, libraries, external services, key classes mentioned across 2+ modules.
+Extract **external** technologies, libraries, services, and tools. NOT internal classes.
+
+**What IS an entity:** Something you could Google independently — PostgreSQL, Next.js, EasyCA, VNeID, Zod.
+**What is NOT an entity:** Internal service classes (WorkflowService, EmailService), generic terms (theme, middleware), or architectural patterns (those are concepts).
 
 **Entity page format:**
 ```markdown
 ---
 title: {Entity Name}
 type: entity
-tags: [technology|library|service]
+tags: [technology|library|service|database|tool]
 sources: [[{originating-module}]]
 ---
 
 # {Entity Name}
 
-{2-3 sentence description from wiki-output modules.}
+## What it is
+{2-3 sentences: what this technology does in general.}
+
+## How this project uses it
+{3-5 sentences with concrete details from wiki-output: version, config values, key patterns.}
+
+**Key configuration:**
+- {env var or config}: `{value}` — {purpose}
 
 ## Referenced in
-- [[module-a]] — {how it's used}
-- [[module-b]] — {how it's used}
+- [[module-a]] — {specific role: "ORM adapter for user/workflow tables"}
+- [[module-b]] — {specific role: "schema validation on API input"}
+
+## Related
+- [[concept-x]] — {how they connect}
+- [[entity-y]] — {works together with}
 ```
 
-**Target: 15-40 entities** (only those in 2+ modules).
+**Target: 15-30 entities.** Only EXTERNAL technologies in 2+ modules.
 
 ### Concepts (wiki/concepts/)
-Extract architectural patterns, workflows, design principles.
+Extract architectural patterns, workflows, and design principles with DEPTH.
 
 **Concept page format:**
 ```markdown
 ---
 title: {Concept Name}
 type: concept
-tags: [pattern|workflow|architecture]
+tags: [pattern|workflow|architecture|security|process]
 sources: [[{originating-module}]]
 ---
 
 # {Concept Name}
 
-{3-5 sentence explanation as it applies in this project.}
+## What it is
+{2-3 sentences: general definition of this pattern/concept.}
 
-## How it works
-{Bullet points.}
+## How this project implements it
+{5-10 bullet points with concrete details from wiki-output modules:}
+- {Which files/services implement it}
+- {Key functions involved with file:line if available}
+- {Config values, constraints, thresholds}
+- {Edge cases or [IMPORTANT]/[WARNING] notes from design rationale}
+
+## Flow
+{If this concept has a flow/sequence, describe it step by step with actual function names.}
 
 ## Related
-- [[entity-a]], [[module-x]]
+- [[entity-a]] — {technology that enables this concept}
+- [[concept-b]] — {related pattern}
+- Modules: [[module-x]], [[module-y]]
 ```
 
-**Target: 10-25 concepts.**
+**Priority concepts** (create if found in wiki-output):
+- Multi-tenancy, Provider/DI pattern, Incremental PDF signing
+- Impersonation, Audit logging, Magic link auth, Workflow state machine
+
+**Target: 15-25 concepts.**
 
 ## Step 4: Generate wiki/overview.md and wiki/index.md
 
@@ -795,8 +823,9 @@ Total wiki pages: {N}
 ## Rules
 - DO NOT delete or modify wiki-output/
 - DO NOT invent information — only extract from wiki-output/ content
-- Entity threshold: 2+ modules must mention it
-- Use [[wikilinks]] to cross-reference
+- Entity = external technology only (NOT internal classes)
+- Concept = architectural pattern with implementation details (NOT generic terms)
+- Use [[wikilinks]] to cross-reference entities ↔ concepts ↔ sources
 """
 
 
