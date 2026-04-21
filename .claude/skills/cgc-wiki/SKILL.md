@@ -17,11 +17,9 @@ pip install wiki-forge    # CGC bundled (Rust + DuckDB)
 ## Quick Start
 
 ```bash
-# Index + install AI IDE hooks (no LLM, free, ~5-20s)
-wiki-forge init --no-llm /path/to/repo
-
-# Or use cgc-wiki directly
-cgc-wiki index /path/to/repo
+cd /path/to/repo
+wiki-forge init          # auto-detects, indexes, installs AI IDE hooks
+# Then type /wiki in your AI IDE to generate docs ($0)
 ```
 
 ## Step-by-Step Guide for AI Agents

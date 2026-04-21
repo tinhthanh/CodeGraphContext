@@ -509,9 +509,46 @@ Generate comprehensive wiki documentation using pre-computed module contexts.
 ## CRITICAL RULES
 
 - **DO NOT write shell scripts, Python scripts, or call external CLIs.** YOU and your subagents must read context files and write docs using AI reasoning.
-- **DO NOT generate filler text or repetitive adverbs.** Write concise, accurate docs. If uncertain, write less but keep it correct.
+- **DO NOT write scripts. Read each context file and write each doc with AI reasoning.**
 - Each doc must have real architectural analysis with Mermaid diagrams.
 - Keep each doc **50-150 lines** max.
+
+### Writing Style — MANDATORY
+
+**WRITE LIKE AN ENGINEER, NOT A MARKETER.**
+
+Every sentence must contain a concrete fact: a function name, a file path, a config value, a data flow, or a constraint. If a sentence could apply to any random project, delete it.
+
+**BANNED patterns** (your output will be rejected if these appear):
+- Adverb stuffing: "natively", "securely", "dynamically", "accurately", "cleanly", "perfectly", "effectively", "flawlessly", "structurally", "organically", "robustly"
+- Vague verbs: "manages", "handles", "orchestrates", "facilitates", "leverages" without saying WHAT or HOW
+- Meaningless modifiers: "complex", "massive", "enormous", "heavy", "deep", "strict", "explicit" when not quantified
+- Redundant clauses: "ensuring X while maintaining Y avoiding Z" chains
+
+**GOOD example:**
+> `WorkflowService.cancel(id, reason)` marks the workflow as cancelled in `workflows` table, sends cancellation emails to pending signers via `NotificationService`, and logs `WORKFLOW_CANCELLED` audit event.
+
+**BAD example (DO NOT WRITE LIKE THIS):**
+> The workflow module operates as the central REST nerve center orchestrating complex lifecycle management dynamically handling massive operations securely ensuring clean mappings natively.
+
+### Language Rule
+
+**Write in English by default.** If the user requests Vietnamese (or another language):
+- Section headings: translate (e.g., "Mục đích", "Kiến trúc", "Luồng thực thi")
+- Explanatory text: translate naturally
+- **NEVER translate**: function names, file paths, config values, class names, variable names, CLI commands, error messages, HTTP methods/paths, library names
+- **NEVER invent technical jargon in the target language.** Use the original English term with translated context. Example: "Hàm `getAuth()` khởi tạo Better Auth instance" — NOT "Hàm Truy Xuất Lõi Mạch Định Danh Bảo Vệ"
+- If unsure how to translate a term, keep it in English
+
+### Data Extraction — MANDATORY
+
+You MUST extract and include these from the module context file. Do NOT summarize them away:
+
+1. **Operational Parameters** — if the context has an "Operational Parameters" section, include ALL of them as a table
+2. **Key Functions** — list the top 10 most important functions with file:line references
+3. **Route Table** — if the module has API routes, list EVERY route as `Method | Path | Handler`
+4. **Design Rationale** — copy ALL `[IMPORTANT]`, `[WARNING]`, `[NOTE]` items verbatim from source
+5. **Call Graph Summary** — state total internal calls count and list top 5 outgoing dependencies
 
 ## Prerequisites
 
@@ -562,21 +599,58 @@ MODULE_LIST
 For EACH module:
 1. Read `.cgc-index/module_contexts/{slug}.md` — contains all context needed
 2. Follow "Instructions for AI Wiki Generator" at the bottom of the context file
-3. Write `wiki-output/{slug}.md` with these sections:
+3. Write `wiki-output/{slug}.md` with the required sections listed below
 
 ## Required sections per doc:
-- **Purpose** — what this module does and why (2-3 sentences)
-- **Architecture** — key classes and how they relate (include Mermaid diagram)
-- **API Endpoints** — markdown table: Method | Path | Description (skip if 0 routes)
-- **Execution Flows** — step-by-step what happens when key functions are called (top 2-3 flows)
-- **Design Decisions** — rationale from [IMPORTANT], [WARNING], [NOTE] source comments
-- **Dependencies** — what this module depends on and what depends on it
 
-Rules:
-- 50-150 lines per doc. Be concise but complete.
-- DO NOT generate filler text or repetitive adverbs.
-- DO NOT write scripts. Read each context file and write each doc with AI reasoning.
+### 1. Purpose (2-3 sentences)
+What this module does. State file count, function count, and class count from the Stats line.
+
+### 2. Architecture (Mermaid diagram)
+Copy and enhance the Mermaid diagram from the context. Add the key classes/services as nodes.
+
+### 3. API Endpoints (table — skip if 0 routes)
+Extract EVERY route from the context file. Format:
+
+| Method | Path | Handler | Description |
+|--------|------|---------|-------------|
+
+### 4. Key Functions (table — top 10)
+Pick the 10 most important functions from the "Key Functions" section:
+
+| Function | File:Line | Purpose |
+|----------|-----------|---------|
+
+### 5. Execution Flows (top 2-3)
+From the "Execution Flows" section, describe what happens step-by-step. Include the step count and depth.
+
+### 6. Design Rationale
+Copy ALL [IMPORTANT], [WARNING], [NOTE], [CONTEXT] items from "Design Rationale" section.
+Format as a bullet list with the tag, quote, and file:line reference. Do NOT paraphrase — keep the original wording.
+
+### 7. Operational Parameters (table — skip if none)
+If the context has "Operational Parameters", include ALL as:
+
+| Name | Value | Category | File |
+|------|-------|----------|------|
+
+### 8. Call Graph Summary
+- State: "N internal calls, M outgoing, K incoming" using actual numbers from context
+- List top 5 outgoing calls with target file paths
+
+### 9. Dependencies
+- **Outgoing (Depends on)**: List with [[module-slug]] wikilinks
+- **Incoming (Depended on by)**: List with [[module-slug]] wikilinks
+
+## Writing rules — STRICTLY ENFORCED:
+
+- 50-150 lines per doc. Be concise but data-rich.
+- Every sentence must contain a concrete fact (function name, file path, config value, or data flow).
+- BANNED words: "natively", "securely", "dynamically", "accurately", "cleanly", "perfectly", "effectively", "flawlessly", "structurally", "robustly", "orchestrates", "facilitates", "leverages"
+- DO NOT write filler. If you don't know something, skip it. Short + correct > long + vague.
 - Use confidence tags: EXTRACTED = certain (AST), INFERRED = cross-file resolution.
+- When mentioning another module, use: [[module-slug]]
+- Language: Write in English by default. If the user requested another language, translate headings and explanatory text but NEVER translate function names, file paths, config values, class names, HTTP paths. NEVER invent technical jargon.
 ```
 
 **Step 2B-verify: Check results**
@@ -585,19 +659,121 @@ After all subagents complete:
 - List `wiki-output/` directory
 - Count generated files vs expected
 - If any are missing, generate them yourself
-- If any file is suspiciously short (< 10 lines), regenerate it
+- If any file is suspiciously short (< 20 lines), regenerate it
+- **Quality spot-check**: Read 2-3 random files. If they contain banned adverbs or lack function/file references, regenerate them.
 
 ## Step 3: Generate overview
 
 After ALL module docs exist, generate `wiki-output/overview.md`:
 1. Read `.cgc-index/GRAPH_REPORT.md` for god nodes + summary stats
-2. Write overview with:
-   - Project summary (what it does, tech stack)
-   - Mermaid architecture diagram (max 10 nodes)
-   - Module index table: Module | Files | Functions | Key Feature
-   - Link each module using `[Module Name](slug.md)`
-   - God nodes section (most connected functions/classes)
-   - API surface summary (total routes by area)
+2. Read `.cgc-index/module_contexts/index.md` for the full module list with stats
+
+Write overview with these REQUIRED sections:
+
+### 3a. Project Summary (3-5 sentences)
+What the project does, tech stack, total file/function/class counts.
+
+### 3b. Architecture Diagram
+Mermaid diagram showing the top-level layers (max 10 nodes). Label edges with what flows between them.
+
+### 3c. Module Index Table
+MUST be a markdown table with data from index.md:
+
+| Module | Files | Functions | Classes | Key Feature |
+|--------|-------|-----------|---------|-------------|
+
+Link each module: `[Module Name](slug.md)`
+
+### 3d. God Nodes
+From GRAPH_REPORT.md, list the most-connected functions/classes (highest in-degree). These are the architectural hotspots.
+
+### 3e. API Surface Summary
+Group all routes by area (auth, workflows, admin, etc.) with total count per area.
+
+### 3f. Design Decisions Summary
+Collect the most critical [IMPORTANT] and [WARNING] items across all modules (top 5-10).
+"""
+
+
+def _antigravity_review_skill() -> str:
+    return """---
+name: wiki-review
+description: Review and fix wiki-output quality by comparing against CGC module contexts
+trigger: user asks to review wiki, fix wiki quality, or types /wiki-review
+---
+
+# /wiki-review — Wiki Quality Review & Fix
+
+Review `wiki-output/` docs against `.cgc-index/module_contexts/` source data. Fix quality issues in-place.
+**Zero LLM API cost** — uses your IDE's built-in AI.
+
+## When to use
+
+Run AFTER `/wiki` has generated `wiki-output/`. This is a quality gate before committing or publishing.
+
+## Step 1: Build checklist
+
+Read `wiki-output/overview.md` and list all module doc files. For each file, you will check quality.
+
+If there are more than 15 files, split into chunks of ~10 and dispatch subagents in parallel (same pattern as `/wiki`).
+
+## Step 2: Review each doc
+
+For each `wiki-output/{slug}.md`:
+
+1. Read `wiki-output/{slug}.md` (the generated doc)
+2. Read `.cgc-index/module_contexts/{slug}.md` (the source context)
+3. Check against this checklist:
+
+### Quality Checklist
+
+| # | Check | How to verify |
+|---|-------|---------------|
+| 1 | **No filler adverbs** | Search for: "natively", "securely", "dynamically", "accurately", "cleanly", "perfectly", "effectively", "flawlessly", "structurally", "robustly". If found → rewrite the sentence with a concrete fact. |
+| 2 | **No invented jargon** | If doc is in Vietnamese/other language: check that function names, file paths, class names, config values are in English. If translated → fix. |
+| 3 | **Operational params preserved** | Compare "Operational Parameters" section in context vs doc. If context has params but doc doesn't → add them. |
+| 4 | **Design rationale complete** | Count `[IMPORTANT]`, `[WARNING]`, `[NOTE]` items in context's "Design Rationale" section. Compare with doc. If any missing → add verbatim with file:line. |
+| 5 | **Route table complete** | If context lists routes, check doc has ALL routes (not just "5 representative"). If truncated → expand to full list. |
+| 6 | **Key functions listed** | Doc should have top 10 functions with file:line refs. If missing → add from context "Key Functions" section. |
+| 7 | **Mermaid diagram present** | Every doc must have at least 1 Mermaid diagram. If missing → add based on context "Architecture" section. |
+| 8 | **Line count 50-150** | If < 50 → too thin, add missing data. If > 150 → trim redundant text. |
+| 9 | **Every sentence has a fact** | Each sentence should contain a function name, file path, config value, or data flow. Sentences like "This module handles various operations" → rewrite or delete. |
+
+### Fix process
+
+- If a file fails 1-2 checks: edit in-place (use Edit tool)
+- If a file fails 3+ checks: rewrite entirely from the module context
+- Track fixes in a summary
+
+## Step 3: Review overview.md
+
+Check `wiki-output/overview.md` specifically for:
+1. Module index TABLE exists (not just bullet list)
+2. God nodes section exists
+3. API surface summary with route counts exists
+4. Architecture Mermaid diagram has labeled edges
+5. No filler text
+
+Fix any issues.
+
+## Step 4: Report
+
+After all reviews, output a summary:
+
+```
+Wiki Review Summary
+───────────────────
+Files reviewed: N
+Files passed: N
+Files fixed: N
+Files rewritten: N
+
+Fixes applied:
+- {slug}.md: added 3 missing operational params
+- {slug}.md: removed filler adverbs (5 instances)
+- {slug}.md: expanded route table from 5 to 27 routes
+- overview.md: added module index table
+```
 """
 
 
