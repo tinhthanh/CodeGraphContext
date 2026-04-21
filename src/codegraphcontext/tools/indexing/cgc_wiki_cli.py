@@ -695,6 +695,111 @@ Collect the most critical [IMPORTANT] and [WARNING] items across all modules (to
 """
 
 
+def _antigravity_classify_skill() -> str:
+    return """---
+name: wiki-classify
+description: Classify wiki-output into entities, concepts, and sources for full vault structure
+trigger: user asks to classify wiki, organize wiki, or types /wiki-classify
+---
+
+# /wiki-classify — Classify Wiki into Vault Structure
+
+Read `wiki-output/` flat files and organize into `wiki/` vault structure with entities, concepts, and sources.
+**Zero LLM API cost** — uses your IDE's built-in AI.
+
+## When to use
+
+Run AFTER `/wiki` has generated `wiki-output/`. Creates the full vault structure that `wiki-forge serve` expects.
+
+## Step 1: Read wiki-output
+
+1. List all `.md` files in `wiki-output/`
+2. Read `wiki-output/overview.md` to understand the project
+
+## Step 2: Ensure wiki/ directories exist
+
+Create: `wiki/sources/`, `wiki/entities/`, `wiki/concepts/`, `wiki/syntheses/`
+
+## Step 3: Classify and distribute
+
+### Sources (wiki/sources/)
+Copy ALL wiki-output/*.md files to wiki/sources/ — these are code-to-doc modules.
+
+### Entities (wiki/entities/)
+Extract technologies, libraries, external services, key classes mentioned across 2+ modules.
+
+**Entity page format:**
+```markdown
+---
+title: {Entity Name}
+type: entity
+tags: [technology|library|service]
+sources: [[{originating-module}]]
+---
+
+# {Entity Name}
+
+{2-3 sentence description from wiki-output modules.}
+
+## Referenced in
+- [[module-a]] — {how it's used}
+- [[module-b]] — {how it's used}
+```
+
+**Target: 15-40 entities** (only those in 2+ modules).
+
+### Concepts (wiki/concepts/)
+Extract architectural patterns, workflows, design principles.
+
+**Concept page format:**
+```markdown
+---
+title: {Concept Name}
+type: concept
+tags: [pattern|workflow|architecture]
+sources: [[{originating-module}]]
+---
+
+# {Concept Name}
+
+{3-5 sentence explanation as it applies in this project.}
+
+## How it works
+{Bullet points.}
+
+## Related
+- [[entity-a]], [[module-x]]
+```
+
+**Target: 10-25 concepts.**
+
+## Step 4: Generate wiki/overview.md and wiki/index.md
+
+Overview links to all sections with page counts. Index is a table: Section | Pages | Description.
+
+## Step 5: Report
+
+```
+Wiki Classify Summary
+─────────────────────
+Input: wiki-output/ ({N} files)
+Output:
+  wiki/sources/   → {N} module docs
+  wiki/entities/  → {N} entity pages
+  wiki/concepts/  → {N} concept pages
+  wiki/overview.md → updated
+  wiki/index.md   → updated
+Total wiki pages: {N}
+```
+
+## Rules
+- DO NOT delete or modify wiki-output/
+- DO NOT invent information — only extract from wiki-output/ content
+- Entity threshold: 2+ modules must mention it
+- Use [[wikilinks]] to cross-reference
+"""
+
+
 def _antigravity_docs_index_skill() -> str:
     return """---
 name: docs-index
