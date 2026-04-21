@@ -695,6 +695,114 @@ Collect the most critical [IMPORTANT] and [WARNING] items across all modules (to
 """
 
 
+def _antigravity_docs_index_skill() -> str:
+    return """---
+name: docs-index
+description: Index docs/ folder into compact summaries that /wiki can reference
+trigger: user asks to index docs, or types /docs-index
+---
+
+# /docs-index — Index Documentation for Wiki
+
+Scan `docs/` folder, create compact summaries in `.cgc-index/docs-context/` so `/wiki` can merge hand-written docs into generated wiki.
+**Zero LLM API cost** — uses your IDE's built-in AI.
+
+## When to use
+
+Run BEFORE `/wiki` if the project has a `docs/` folder with hand-written documentation (architecture, API references, guides, etc.).
+
+Only needs to run once, or when docs/ content changes.
+
+## Step 1: Discover docs
+
+1. Check if `docs/` exists. If not, check `documentation/`, `doc/`. If none found, stop.
+2. List all `.md` files in docs/ with file sizes
+3. Create `.cgc-index/docs-context/` directory
+
+## Step 2: Read module index
+
+Read `.cgc-index/module_contexts/index.md` to get the list of code modules. This is needed to map docs → modules.
+
+## Step 3: Process each doc
+
+For each markdown file in `docs/`:
+
+1. Read the full file
+2. Write a compact summary to `.cgc-index/docs-context/{filename}` with this format:
+
+```markdown
+# {Document Title}
+
+**Source:** `docs/{filename}` ({size} bytes)
+**Related modules:** [[module-a]], [[module-b]], ...
+
+## Key Information
+
+- {Bullet point 1: concrete fact, number, or decision}
+- {Bullet point 2}
+- ...
+- {Bullet point N}
+
+## Data Tables (preserve verbatim)
+
+{Copy any tables from the source doc — API endpoints, config values,
+schema definitions, environment variables. These are high-value structured
+data that must not be summarized away.}
+
+## Constraints & Decisions
+
+- {Any architectural decisions, limitations, or requirements mentioned}
+```
+
+### Rules for summarization:
+
+- **Target: 30-80 lines per summary** (source may be 200-500 lines)
+- **KEEP verbatim:** tables, code blocks, config values, API specs, env vars, schema definitions
+- **KEEP verbatim:** anything marked IMPORTANT, WARNING, NOTE, TODO
+- **Summarize:** narrative explanations, step-by-step guides, background context
+- **Map to modules:** identify which `module_contexts/` modules this doc relates to using [[module-slug]] wikilinks
+- **Skip:** table of contents, navigation links, badges, images
+
+### For non-markdown files (PDF, DOCX):
+
+- Note their existence in the index but do not attempt to read them
+- Write: `**Format:** PDF (not indexed — use wiki-forge ingest for PDF/DOCX processing)`
+
+## Step 4: Generate index
+
+Write `.cgc-index/docs-context/index.md`:
+
+```markdown
+# Documentation Context Index
+
+Summaries of hand-written docs for wiki generation.
+
+| Document | Size | Related Modules | Key Topic |
+|----------|------|-----------------|-----------|
+| [system-architecture](system-architecture.md) | 32KB | [[services]], [[schema]], [[auth]] | System layers, data flows |
+| [database-schema](database-schema.md) | 15KB | [[schema]], [[db]] | Table definitions, relations |
+| ... | | | |
+
+## Usage
+
+These summaries are consumed by `/wiki` during wiki-output generation.
+To regenerate: `/docs-index`
+```
+
+## Step 5: Report
+
+```
+Docs Index Summary
+──────────────────
+Source: docs/ ({N} files, {total_size})
+Output: .cgc-index/docs-context/ ({N} summaries)
+Skipped: {N} non-markdown files
+
+Next step: run /wiki to generate wiki with docs context merged
+```
+"""
+
+
 def _antigravity_review_skill() -> str:
     return """---
 name: wiki-review
