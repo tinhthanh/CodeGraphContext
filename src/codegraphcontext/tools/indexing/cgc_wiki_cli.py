@@ -696,7 +696,7 @@ Collect the most critical [IMPORTANT] and [WARNING] items across all modules (to
 
 
 def _antigravity_classify_skill() -> str:
-    return """---
+    return '''---
 name: wiki-classify
 description: Classify wiki-output into entities, concepts, and sources for full vault structure
 trigger: user asks to classify wiki, organize wiki, or types /wiki-classify
@@ -706,6 +706,23 @@ trigger: user asks to classify wiki, organize wiki, or types /wiki-classify
 
 Read `wiki-output/` flat files and organize into `wiki/` vault structure with entities, concepts, and sources.
 **Zero LLM API cost** — uses your IDE's built-in AI.
+
+## ABSOLUTE PROHIBITION
+
+**YOU MUST NOT write or execute ANY scripts.** No Python, no Bash, no Node.js, no `cat << EOF`, no `shutil.copy`. This skill is about YOU (the AI) reading files, understanding their content, and writing new markdown files using your reasoning.
+
+If you write a script, the output will be garbage templates like "Initializes components mapping contexts" — which is useless. You MUST read the actual wiki-output content and extract real information.
+
+**Violation examples (DO NOT DO THESE):**
+- `cat << 'EOF' > scripts/wiki-classify.py`
+- `python3 scripts/classify.py`
+- `bash -c "for f in wiki-output/*.md; do cp ..."`
+- Writing ANY .py, .sh, or .js file
+
+**What you MUST do instead:**
+- Read wiki-output/services.md with the Read tool
+- Understand: "services uses Drizzle ORM for DB, pdf-lib for signing, Resend for email"
+- Write wiki/entities/drizzle-orm.md with the Write tool, including real details you just read
 
 ## When to use
 
@@ -731,8 +748,9 @@ Extract **external** technologies, libraries, services, and tools. NOT internal 
 **What IS an entity:** Something you could Google independently — PostgreSQL, Next.js, EasyCA, VNeID, Zod.
 **What is NOT an entity:** Internal service classes (WorkflowService, EmailService), generic terms (theme, middleware), or architectural patterns (those are concepts).
 
-**Entity page format:**
-```markdown
+**Entity page format — every field must contain REAL data from wiki-output:**
+
+```
 ---
 title: {Entity Name}
 type: entity
@@ -746,27 +764,27 @@ sources: [[{originating-module}]]
 {2-3 sentences: what this technology does in general.}
 
 ## How this project uses it
-{3-5 sentences with concrete details from wiki-output: version, config values, key patterns.}
+{3-5 sentences with concrete details FROM wiki-output modules you just read.}
 
 **Key configuration:**
 - {env var or config}: `{value}` — {purpose}
 
 ## Referenced in
-- [[module-a]] — {specific role: "ORM adapter for user/workflow tables"}
-- [[module-b]] — {specific role: "schema validation on API input"}
+- [[module-a]] — {specific role FROM the module doc you read}
+- [[module-b]] — {specific role FROM the module doc you read}
 
 ## Related
 - [[concept-x]] — {how they connect}
-- [[entity-y]] — {works together with}
 ```
 
 **Target: 15-30 entities.** Only EXTERNAL technologies in 2+ modules.
 
 ### Concepts (wiki/concepts/)
-Extract architectural patterns, workflows, and design principles with DEPTH.
+Extract architectural patterns, workflows, design principles. Include REAL implementation details.
 
-**Concept page format:**
-```markdown
+**Concept page format — every field must contain REAL data from wiki-output:**
+
+```
 ---
 title: {Concept Name}
 type: concept
@@ -777,25 +795,24 @@ sources: [[{originating-module}]]
 # {Concept Name}
 
 ## What it is
-{2-3 sentences: general definition of this pattern/concept.}
+{2-3 sentences: general definition.}
 
 ## How this project implements it
-{5-10 bullet points with concrete details from wiki-output modules:}
-- {Which files/services implement it}
-- {Key functions involved with file:line if available}
-- {Config values, constraints, thresholds}
-- {Edge cases or [IMPORTANT]/[WARNING] notes from design rationale}
+{5-10 bullet points with REAL details from wiki-output:}
+- {Which files/services implement it — from module docs you read}
+- {Key functions with file:line — from Key Functions tables}
+- {Config values, thresholds — from Operational Parameters}
+- {[IMPORTANT]/[WARNING] notes — from Design Rationale sections}
 
 ## Flow
-{If this concept has a flow/sequence, describe it step by step with actual function names.}
+{Step by step with REAL function names from the wiki-output execution flows.}
 
 ## Related
-- [[entity-a]] — {technology that enables this concept}
-- [[concept-b]] — {related pattern}
+- [[entity-a]], [[concept-b]]
 - Modules: [[module-x]], [[module-y]]
 ```
 
-**Priority concepts** (create if found in wiki-output):
+**Priority concepts** (create if found):
 - Multi-tenancy, Provider/DI pattern, Incremental PDF signing
 - Impersonation, Audit logging, Magic link auth, Workflow state machine
 
@@ -803,30 +820,17 @@ sources: [[{originating-module}]]
 
 ## Step 4: Generate wiki/overview.md and wiki/index.md
 
-Overview links to all sections with page counts. Index is a table: Section | Pages | Description.
-
 ## Step 5: Report
 
-```
-Wiki Classify Summary
-─────────────────────
-Input: wiki-output/ ({N} files)
-Output:
-  wiki/sources/   → {N} module docs
-  wiki/entities/  → {N} entity pages
-  wiki/concepts/  → {N} concept pages
-  wiki/overview.md → updated
-  wiki/index.md   → updated
-Total wiki pages: {N}
-```
-
 ## Rules
-- DO NOT delete or modify wiki-output/
-- DO NOT invent information — only extract from wiki-output/ content
+- **ABSOLUTELY NO SCRIPTS** — no Python, no Bash, no cat heredoc. Use Read/Write tools only.
+- **DO NOT delete or modify wiki-output/**
+- **DO NOT invent information** — only extract from wiki-output/ content
+- **DO NOT use template phrases** — BANNED: "Initializes components mapping contexts", "Evaluates specific bounds", "Translates executions updating database layers", "Serves as an architectural backbone", "Contextually binds this principle", "Inherits standard operational routing constraints"
 - Entity = external technology only (NOT internal classes)
-- Concept = architectural pattern with implementation details (NOT generic terms)
-- Use [[wikilinks]] to cross-reference entities ↔ concepts ↔ sources
-"""
+- Concept = architectural pattern with REAL implementation details
+- Use [[wikilinks]] to cross-reference
+'''
 
 
 def _antigravity_docs_index_skill() -> str:
