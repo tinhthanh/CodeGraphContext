@@ -1053,131 +1053,110 @@ trigger: user asks to generate wiki from docs, process documentation repo, or ty
 Transform raw markdown docs (Confluence exports, BA docs, design docs) into structured wiki pages.
 **Zero LLM API cost** — uses your IDE's built-in AI.
 
-## CRITICAL RULES
+## ⚠️ TOKEN EFFICIENCY RULES — READ FIRST
 
-- **DO NOT write shell scripts or Python scripts.** Read files and write docs using AI reasoning only.
-- **DO NOT copy-paste raw content.** Every output page must be a structured synthesis.
-- **DO NOT hallucinate.** Every claim must come from the source file. No invented facts.
-- **SKIP empty files** — files under 200 bytes or with only a metadata header are noise, skip them.
+- **NEVER spawn subagents or parallel agents.** Process everything sequentially in this single session.
+- **NEVER dispatch Agent tool.** All work happens in this one context window.
+- **Read 5 files at once, write 5 outputs at once** — batch reads to minimize tool calls.
+- With 1M context window, you can hold many files simultaneously. Use it.
+
+## CONTENT RULES
+
+- **DO NOT write shell scripts or Python scripts.** Use Read/Write tools only.
+- **DO NOT copy-paste raw content.** Every output must be a structured synthesis.
+- **DO NOT hallucinate.** Every claim must come from the source file.
+- **SKIP empty files** — under 200 bytes or only a Confluence metadata header.
 
 ### Writing Style — MANDATORY
 
 Every sentence must contain a concrete fact from the source document.
 
-**BANNED patterns:**
-- Vague summaries: "This document discusses various aspects of..."
-- Filler: "comprehensively", "effectively", "seamlessly", "robustly"
-- Invented content not in source file
+**BANNED:** "comprehensively", "effectively", "seamlessly", "robustly", "This document discusses various aspects of..."
 
-**GOOD example:**
-> The authentication flow has 3 layers: Traefik API gateway → authorization-service (token check) → Keycloak (token verify). Logout triggers a revoke token flow.
-
-**BAD example:**
-> This document comprehensively covers authentication aspects effectively managing security.
+**GOOD:** `The authentication flow has 3 layers: Traefik → authorization-service (token check) → Keycloak (token verify).`
 
 ### Language Rule
 
-Write in the same language as the source document. Never translate technical names, system names, or product names.
+Write in the same language as the source document. Never translate system/product names.
 
 ## Prerequisites
 
-Run `wiki-forge init-docs .` first. This creates `wiki/sources/` with copied docs.
+`wiki/sources/` must exist (run `wiki-forge init-docs .` first).
 
-If `wiki/sources/` is empty, stop and tell the user to run `wiki-forge init-docs .`.
+## Step 1: Scan and filter
 
-## Step 1: Discover source folders
+List all `.md` files under `wiki/sources/` recursively.
 
-1. List all subdirectories in `wiki/sources/`
-2. For each folder, count `.md` files
-3. Print inventory:
+**Skip a file if:**
+- Size < 200 bytes
+- Content is only: `# title` + `> Migrated from Confluence: ...` with no body
+
+Count: total files, skippable files, files to process.
+
+Print summary:
 ```
-wiki/sources/
-  confluence/architecture/   → 45 files
-  confluence/pmo/            → 12 files
-  context/                   → 8 files
-  ...
+Total: 1613 files
+Skip (empty): 490
+To process: 1123
 ```
-4. Process folder-by-folder to avoid context overflow
 
-## Step 2: Filter noise
+**STOP if files to process > 500.** Tell the user: "Too many files. Run /wiki-docs with --folder confluence/architecture to process one folder at a time."
 
-For each `.md` file, skip if:
-- File size < 200 bytes
-- Content is ONLY a metadata header: `> Migrated from Confluence: ...`
-- Title only with no body content
+## Step 2: Batch process — 5 files per read cycle
 
-Log skipped files count per folder.
+For each batch of 5 files:
 
-## Step 3: Process each file
-
-For each non-empty source file:
-
-1. Read the file
-2. Strip Confluence metadata line: `> Migrated from Confluence: Space ... | Page ID: ... | Last updated: ...`
-3. Generate structured output:
+1. Read all 5 files in parallel (MultiRead)
+2. For EACH file, generate structured output:
 
 ```markdown
 ---
 title: "{Document Title}"
 type: source
-source_file: {relative path from wiki/sources/}
+source_file: {relative path}
 ---
 
 ## Summary
 
-{2-4 sentences. Concrete facts only. What this document describes, the key system/process/decision covered.}
+{2-4 sentences. Concrete facts only.}
 
 ## Key Claims
 
-- **{Claim heading}**: {specific fact, number, decision, or constraint from the document}
-- **{Claim heading}**: {specific fact}
-- ... (3-8 bullet points, only what's explicitly stated in source)
+- **{heading}**: {specific fact from document}
+- ... (3-8 bullets, only stated facts)
 
 ## Connections
 
-* [[{Entity or system name}]] — {1-line role description}
-* [[{Another entity}]] — {role}
-(Only list entities/systems explicitly mentioned in the source)
+* [[{System/Entity}]] — {1-line role}
 ```
 
-4. Overwrite the file with structured output
+3. Write all 5 outputs (overwrite source files)
+4. Print: `✓ Batch N/M — 5 files processed`
 
-## Step 4: Process by folder in batches
+**Do NOT spawn agents. Process all batches yourself sequentially.**
 
-Process folders one at a time. For large folders (>20 files), dispatch subagents in parallel:
-- Each subagent handles ~10 files
-- Subagent reads source, writes structured output
+## Step 3: Update overview.md
 
-After each folder completes, print:
-```
-✓ confluence/architecture/ — 32 processed, 13 skipped (empty)
-```
-
-## Step 5: Update overview.md
-
-After all folders processed, update `wiki/overview.md`:
+After all files processed, write `wiki/overview.md`:
 
 ```markdown
 # {Project Name} — Documentation Overview
 
-## Folders
-
-| Folder | Files processed | Files skipped |
-|--------|----------------|---------------|
+| Folder | Processed | Skipped |
+|--------|-----------|---------|
 | confluence/architecture/ | 32 | 13 |
 | ...
-
-## Total: {N} pages ready for wiki-forge pack
+| **Total** | **N** | **N** |
 ```
 
-## Step 6: Final report
+## Step 4: Final report
 
 ```
-Wiki Docs Summary
-─────────────────
-Folders processed: N
-Files processed:   N
-Files skipped:     N (empty/noise)
+Wiki Docs Complete
+──────────────────
+Processed: N files
+Skipped:   N files (empty)
+Duration:  ~N min
 
 Next: wiki-forge pack --vault .
 ```
