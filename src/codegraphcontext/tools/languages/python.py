@@ -264,9 +264,10 @@ class PythonTreeSitterParser:
                     "is_dependency": False,
                 }
 
+                # Always extract docstring (lightweight, no index_source needed)
+                func_data["docstring"] = self._get_docstring(body_node)
                 if self.index_source:
                     func_data["source"] = self._get_node_text(func_node)
-                    func_data["docstring"] = self._get_docstring(body_node)
 
                 functions.append(func_data)
         return functions
@@ -302,9 +303,10 @@ class PythonTreeSitterParser:
                     "lang": self.language_name,
                     "is_dependency": False,
                 }
+                # Always extract docstring (lightweight, no index_source needed)
+                class_data["docstring"] = self._get_docstring(body_node)
                 if self.index_source:
                     class_data["source"] = self._get_node_text(class_node)
-                    class_data["docstring"] = self._get_docstring(body_node)
 
                 classes.append(class_data)
         return classes

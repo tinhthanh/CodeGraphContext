@@ -141,6 +141,36 @@ class TypescriptTreeSitterParser:
     def _get_docstring(self, body_node):
         return None
 
+    def _get_jsdoc(self, node) -> str | None:
+        """Extract JSDoc /** ... */ comment immediately preceding node."""
+        parent = node.parent
+        if not parent:
+            return None
+        siblings = list(parent.children)
+        try:
+            idx = siblings.index(node)
+        except ValueError:
+            return None
+        for i in range(idx - 1, -1, -1):
+            sib = siblings[i]
+            if sib.type == "comment":
+                raw = self._get_node_text(sib)
+                if raw.startswith("/**"):
+                    lines = []
+                    for line in raw.splitlines():
+                        line = line.strip().lstrip("/*").strip()
+                        if line.startswith("@"):
+                            break
+                        if line:
+                            lines.append(line)
+                    result = " ".join(lines).strip()
+                    return result[:500] if result else None
+                elif raw.startswith("//"):
+                    return raw.lstrip("/").strip()[:500]
+            elif sib.type not in ("\n", "newline"):
+                break
+        return None
+
     def parse(self, path: Path, is_dependency: bool = False, index_source: bool = False) -> Dict:
         self.index_source = index_source
         with open(path, "r", encoding="utf-8") as f:
@@ -233,7 +263,6 @@ class TypescriptTreeSitterParser:
                 args = [self._get_node_text(data['single_param'])]
             context, context_type, _ = self._get_parent_context(func_node)
             class_context = context if context_type == 'class_declaration' else None
-            docstring = None
             func_data = {
                 "name": name,
                 "line_number": func_node.start_point[0] + 1,
@@ -246,11 +275,12 @@ class TypescriptTreeSitterParser:
                 "decorators": [],
                 "lang": self.language_name,
                 "is_dependency": False,
+                # Always extract JSDoc (lightweight, no index_source needed)
+                "docstring": self._get_jsdoc(func_node),
             }
 
             if self.index_source:
                 func_data["source"] = self._get_node_text(func_node)
-                func_data["docstring"] = docstring
             functions.append(func_data)
         return functions
 
@@ -317,9 +347,10 @@ class TypescriptTreeSitterParser:
                     "lang": self.language_name,
                     "is_dependency": False,
                 }
+                # Always extract JSDoc (lightweight, no index_source needed)
+                class_data["docstring"] = self._get_jsdoc(class_node)
                 if self.index_source:
                     class_data["source"] = self._get_node_text(class_node)
-                    class_data["docstring"] = self._get_docstring(class_node)
                 classes.append(class_data)
         return classes
     
