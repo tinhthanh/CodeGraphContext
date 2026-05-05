@@ -43,12 +43,13 @@ def parse_file(path, lang, is_dependency=False, index_source=False,
     return parser_wrapper.parse(path, is_dependency, index_source=index_source, **kwargs)
 
 
-def parse_files_parallel(file_specs, num_threads=None):
+def parse_files_parallel(file_specs, num_threads=None, index_source=False):
     """Parse multiple files in parallel using Rust.
 
     Args:
         file_specs: list of (path_str, lang, is_dependency) tuples
         num_threads: optional thread count (0 = auto)
+        index_source: if True, extract docstrings and source bodies
 
     Returns:
         list of file_data dicts
@@ -59,7 +60,7 @@ def parse_files_parallel(file_specs, num_threads=None):
     if not RUST_AVAILABLE:
         raise RuntimeError("Rust engine required for parallel parsing")
 
-    return _rust_parse_files_parallel(file_specs, num_threads)
+    return _rust_parse_files_parallel(file_specs, num_threads, index_source)
 
 
 def pre_scan_for_imports(file_specs):

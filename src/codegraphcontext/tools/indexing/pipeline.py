@@ -84,7 +84,7 @@ async def run_tree_sitter_index_async(
             info_logger(f"Rust combined parse+prescan for {len(rust_files)} files...")
             t_parse = time.time()
             specs = [(str(f), lang, is_dependency) for f, lang in rust_files]
-            rust_results, imports_map = _rust_parse_and_prescan(specs)
+            rust_results, imports_map = _rust_parse_and_prescan(specs, index_source=True)
             info_logger(f"Rust parse+prescan done in {time.time() - t_parse:.1f}s "
                         f"({len(imports_map)} symbols)")
 

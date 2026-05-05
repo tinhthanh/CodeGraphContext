@@ -73,6 +73,7 @@ pub fn parse_file(
 pub fn parse_files_parallel(
     file_specs: &[(String, String, bool)], // (path, lang, is_dependency)
     num_threads: Option<usize>,
+    index_source: bool,
 ) -> Vec<ParseResult> {
     use rayon::prelude::*;
 
@@ -84,7 +85,7 @@ pub fn parse_files_parallel(
     pool.install(|| {
         file_specs
             .par_iter()
-            .map(|(path, lang, is_dep)| parse_file(path, lang, *is_dep, false))
+            .map(|(path, lang, is_dep)| parse_file(path, lang, *is_dep, index_source))
             .collect()
     })
 }
@@ -94,6 +95,7 @@ pub fn parse_files_parallel(
 pub fn parse_and_prescan_parallel(
     file_specs: &[(String, String, bool)], // (path, lang, is_dependency)
     num_threads: Option<usize>,
+    index_source: bool,
 ) -> (Vec<ParseResult>, HashMap<String, Vec<String>>) {
     use rayon::prelude::*;
 
@@ -107,7 +109,7 @@ pub fn parse_and_prescan_parallel(
         file_specs
             .par_iter()
             .map(|(path, lang, is_dep)| {
-                let result = parse_file(path, lang, *is_dep, false);
+                let result = parse_file(path, lang, *is_dep, index_source);
 
                 // Extract pre-scan names from parsed data
                 let resolved = fs::canonicalize(Path::new(path))

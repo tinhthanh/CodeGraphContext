@@ -27,13 +27,14 @@ fn parse_file(
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_specs, num_threads=None))]
+#[pyo3(signature = (file_specs, num_threads=None, index_source=false))]
 fn parse_files_parallel(
     py: Python<'_>,
     file_specs: Vec<(String, String, bool)>,
     num_threads: Option<usize>,
+    index_source: bool,
 ) -> PyResult<Vec<PyObject>> {
-    let results = py.allow_threads(|| parser::parse_files_parallel(&file_specs, num_threads));
+    let results = py.allow_threads(|| parser::parse_files_parallel(&file_specs, num_threads, index_source));
     results
         .into_iter()
         .map(|r| conversions::parse_result_to_py(py, r))
@@ -54,14 +55,15 @@ fn pre_scan_for_imports(py: Python<'_>, file_specs: Vec<(String, String)>) -> Py
 /// Parse files in parallel AND build imports_map in one pass.
 /// Returns (list_of_file_data_dicts, imports_map_dict).
 #[pyfunction]
-#[pyo3(signature = (file_specs, num_threads=None))]
+#[pyo3(signature = (file_specs, num_threads=None, index_source=false))]
 fn parse_and_prescan(
     py: Python<'_>,
     file_specs: Vec<(String, String, bool)>,
     num_threads: Option<usize>,
+    index_source: bool,
 ) -> PyResult<PyObject> {
     let (results, imports_map) = py.allow_threads(|| {
-        parser::parse_and_prescan_parallel(&file_specs, num_threads)
+        parser::parse_and_prescan_parallel(&file_specs, num_threads, index_source)
     });
 
     let file_data_list: Vec<PyObject> = results
