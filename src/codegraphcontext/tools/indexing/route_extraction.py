@@ -59,6 +59,145 @@ _NEXTJS_ROUTE_FILES = {"page.tsx", "page.ts", "page.jsx", "page.js", "route.tsx"
 _NEXTJS_ROUTE_GROUPS = re.compile(r'\(([^)]+)\)')  # strip (group) from path
 
 
+# ── Spring (Java/Kotlin) annotation scanning ───────────────────────
+
+_SPRING_MAPPING_RE = re.compile(r'@(Get|Post|Put|Delete|Patch|Request)Mapping\b')
+_STRING_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+_NAMED_PATH_ARG_RE = re.compile(r'\b(?:value|path)\s*=\s*')
+_REQUEST_METHOD_RE = re.compile(r'RequestMethod\.(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b')
+_TYPE_DECL_RE = re.compile(r'\b(?:class|interface|object)\s+[A-Z]\w*')
+
+
+def _strip_jvm_comments(src: str) -> str:
+    """Blank out // and /* */ comments, keeping string literals and newlines.
+
+    Line numbers are preserved so offsets still map to source lines. String
+    literals are honoured, so `"/api/**"` or `// see /api/*` cannot open a
+    phantom block comment.
+    """
+    out = []
+    i, n = 0, len(src)
+    while i < n:
+        ch = src[i]
+        two = src[i:i + 2]
+        if src.startswith('"""', i):  # Java text block / Kotlin raw string
+            j = src.find('"""', i + 3)
+            j = n if j == -1 else j + 3
+            out.append(src[i:j]); i = j
+        elif ch == '"' or ch == "'":
+            j = i + 1
+            while j < n and src[j] != ch and src[j] != "\n":
+                j += 2 if src[j] == "\\" else 1
+            j = min(j + 1, n)
+            out.append(src[i:j]); i = j
+        elif two == "//":
+            j = src.find("\n", i)
+            j = n if j == -1 else j
+            out.append(" " * (j - i)); i = j
+        elif two == "/*":
+            j = src.find("*/", i + 2)
+            j = n if j == -1 else j + 2
+            out.append(re.sub(r"[^\n]", " ", src[i:j])); i = j
+        else:
+            out.append(ch); i += 1
+    return "".join(out)
+
+
+def _balanced_args(code: str, pos: int) -> Optional[str]:
+    """Return the text inside the parenthesis group starting at/after ``pos``.
+
+    None when the annotation has no argument list (bare ``@GetMapping``).
+    """
+    j = pos
+    while j < len(code) and code[j] in " \t\r\n":
+        j += 1
+    if j >= len(code) or code[j] != "(":
+        return None
+    depth, k = 0, j
+    while k < len(code):
+        c = code[k]
+        if c == '"':
+            k += 1
+            while k < len(code) and code[k] != '"':
+                k += 2 if code[k] == "\\" else 1
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return code[j + 1:k]
+        k += 1
+    return code[j + 1:]
+
+
+def _leading_value(args: str) -> str:
+    """The first argument expression (a string, or an array of strings)."""
+    a = args.lstrip()
+    for opener, closer in (("{", "}"), ("[", "]"), ("arrayOf(", ")")):
+        if a.startswith(opener):
+            end = a.find(closer, len(opener))
+            return a[: end + 1] if end != -1 else a
+    m = _STRING_LITERAL_RE.match(a)
+    return m.group(0) if m else ""
+
+
+def _mapping_paths(args: Optional[str]) -> List[str]:
+    """Paths declared by a mapping annotation; [""] when it declares none."""
+    if args is None:
+        return [""]
+    value = _leading_value(args)
+    if not value:
+        m = _NAMED_PATH_ARG_RE.search(args)
+        if m:
+            value = _leading_value(args[m.end():])
+    paths = [p for p in _STRING_LITERAL_RE.findall(value)]
+    return paths or [""]
+
+
+def _join_route(prefix: str, path: str) -> str:
+    prefix = prefix.rstrip("/")
+    if path and not path.startswith("/"):
+        path = "/" + path
+    joined = prefix + path
+    return joined if joined.startswith("/") else "/" + joined
+
+
+def _extract_spring_mappings(code: str) -> List[tuple]:
+    """Return ``(METHOD, path, line)`` for each Spring handler mapping.
+
+    Handles bare annotations (``@GetMapping``), ``value=``/``path=``, array
+    forms (``@GetMapping({"", "/search"})``), multi-line argument lists and
+    method-level ``@RequestMapping(method = RequestMethod.X)``. A
+    ``@RequestMapping`` placed before the first type declaration is treated
+    as the class-level prefix.
+    """
+    first_type = _TYPE_DECL_RE.search(code)
+    type_pos = first_type.start() if first_type else -1
+
+    prefixes = [""]
+    mappings = []
+    for m in _SPRING_MAPPING_RE.finditer(code):
+        kind = m.group(1)
+        args = _balanced_args(code, m.end())
+        if kind == "Request" and 0 <= m.start() < type_pos:
+            prefixes = _mapping_paths(args)
+            continue
+        if kind == "Request":
+            methods = _REQUEST_METHOD_RE.findall(args or "") or ["ANY"]
+        else:
+            methods = [kind.upper()]
+        line = code.count("\n", 0, m.start()) + 1
+        mappings.append((methods, _mapping_paths(args), line))
+
+    results = []
+    for methods, paths, line in mappings:
+        for prefix in prefixes:
+            for path in paths:
+                for method in methods:
+                    results.append((method, _join_route(prefix, path), line))
+    return results
+
+
 def _extract_nextjs_route(file_path: str, repo_path: str) -> Optional[str]:
     """Convert Next.js file path to route path."""
     try:
@@ -254,83 +393,41 @@ def extract_routes(
 
         # ── Java/Kotlin annotation-based routes (source scan fallback) ──
         # Rust parser doesn't extract Java annotations as decorators,
-        # so scan source lines for @GetMapping, @PostMapping, etc.
+        # so scan the (comment-stripped) source for Spring mappings.
         if lang in ("java", "kotlin") and os.path.exists(file_path):
             try:
                 with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
-                    source_lines = fh.readlines()
-
-                def _is_commented(line: str) -> bool:
-                    """Skip // line-comments and lines inside /* ... */ blocks."""
-                    stripped = line.lstrip()
-                    return stripped.startswith("//") or stripped.startswith("*")
-
-                # Track /* ... */ block comment state
-                _block_comment = [False] * len(source_lines)
-                in_block = False
-                for i, ln in enumerate(source_lines):
-                    if in_block:
-                        _block_comment[i] = True
-                        if "*/" in ln:
-                            in_block = False
-                    else:
-                        if "/*" in ln and "*/" not in ln:
-                            in_block = True
-                            _block_comment[i] = True
-
-                # Find class-level @RequestMapping prefix (skip commented)
-                class_prefix = ""
-                for i, line in enumerate(source_lines):
-                    if _block_comment[i] or _is_commented(line):
-                        continue
-                    rm = re.search(r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?["\']([^"\']+)["\']', line)
-                    if rm:
-                        class_prefix = rm.group(1).rstrip("/")
-                        break
-
-                # Find method-level mappings
-                annotation_re = re.compile(
-                    r'@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?["\']([^"\']+)["\']'
-                )
-                for i, line in enumerate(source_lines):
-                    if _block_comment[i] or _is_commented(line):
-                        continue
-                    am = annotation_re.search(line)
-                    if am:
-                        method = am.group(1).upper()
-                        path = class_prefix + am.group(2)
-                        if not path.startswith("/"):
-                            path = "/" + path
-
-                        # Find handler: closest function within ±5 lines of annotation.
-                        # Rust parser sometimes reports function line as FIRST annotation
-                        # (e.g. @Scheduled above @GetMapping), so we look both directions.
-                        handler = ""
-                        ann_line = i + 1
-                        best_fn = None
-                        best_dist = 999
-                        for fn in file_data.get("functions", []):
-                            fn_line = fn.get("line_number", 0)
-                            dist = abs(fn_line - ann_line)
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_fn = fn
-                        if best_fn and best_dist <= 5:
-                            handler = best_fn.get("name", "")
-
-                        key = f"{method}|{path}"
-                        if key not in seen:
-                            seen.add(key)
-                            routes.append({
-                                "method": method,
-                                "path": path,
-                                "handler": handler,
-                                "file": rel_path,
-                                "line": i + 1,
-                                "framework": "spring",
-                            })
+                    code = _strip_jvm_comments(fh.read())
             except OSError:
-                pass
+                code = ""
+            functions = file_data.get("functions", [])
+            for method, path, line in _extract_spring_mappings(code):
+                # Handler: closest function within a few lines of the annotation.
+                # Rust parser sometimes reports function line as FIRST annotation
+                # (e.g. @Scheduled above @GetMapping), so we look both directions.
+                handler = ""
+                best_dist = 999
+                for fn in functions:
+                    dist = abs(fn.get("line_number", 0) - line)
+                    if dist < best_dist:
+                        best_dist = dist
+                        handler = fn.get("name", "")
+                if best_dist > 8:
+                    handler = ""
+
+                # Keyed per file: in a multi-service repo a gateway and a
+                # downstream service legitimately expose the same path.
+                key = f"{method}|{path}|{rel_path}"
+                if key not in seen:
+                    seen.add(key)
+                    routes.append({
+                        "method": method,
+                        "path": path,
+                        "handler": handler,
+                        "file": rel_path,
+                        "line": line,
+                        "framework": "spring",
+                    })
 
         # ── NestJS decorator-based routes (source scan) ──
         if lang in ("typescript", "javascript") and os.path.exists(file_path):
