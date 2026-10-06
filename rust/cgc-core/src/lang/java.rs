@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
@@ -26,6 +26,10 @@ const QUERY_FUNCTIONS: &str = r#"
         name: (identifier) @name
         parameters: (formal_parameters) @params
     ) @function_node
+
+    (compact_constructor_declaration
+        name: (identifier) @name
+    ) @function_node
 "#;
 
 const QUERY_CLASSES: &str = r#"
@@ -33,6 +37,7 @@ const QUERY_CLASSES: &str = r#"
         (class_declaration name: (identifier) @name)
         (interface_declaration name: (identifier) @name)
         (enum_declaration name: (identifier) @name)
+        (record_declaration name: (identifier) @name)
         (annotation_type_declaration name: (identifier) @name)
     ] @class
 "#;
@@ -74,7 +79,41 @@ const QUERY_VARIABLES: &str = r#"
 const QUERY_PRE_SCAN: &str = r#"
     (class_declaration name: (identifier) @name)
     (interface_declaration name: (identifier) @name)
+    (enum_declaration name: (identifier) @name)
+    (record_declaration name: (identifier) @name)
+    (annotation_type_declaration name: (identifier) @name)
 "#;
+
+/// Typed declarations used to infer the static type of a call receiver
+/// (`service.upsert()` → `AccumulatePointService`).
+const QUERY_TYPED_NAMES: &str = r#"
+    (field_declaration
+        type: (_) @type
+        declarator: (variable_declarator name: (identifier) @name))
+    (local_variable_declaration
+        type: (_) @type
+        declarator: (variable_declarator name: (identifier) @name))
+    (formal_parameter
+        type: (_) @type
+        name: (identifier) @name)
+"#;
+
+/// Node kinds that declare a type (and therefore own fields/methods).
+const TYPE_DECL_KINDS: &[&str] = &[
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "record_declaration",
+    "annotation_type_declaration",
+];
+
+/// Node kinds that scope local variables and parameters.
+const CALLABLE_KINDS: &[&str] = &[
+    "method_declaration",
+    "constructor_declaration",
+    "compact_constructor_declaration",
+    "lambda_expression",
+];
 
 pub struct JavaExtractor;
 
@@ -112,9 +151,11 @@ impl JavaExtractor {
         let types = &[
             "method_declaration",
             "constructor_declaration",
+            "compact_constructor_declaration",
             "class_declaration",
             "interface_declaration",
             "enum_declaration",
+            "record_declaration",
             "annotation_type_declaration",
         ];
         get_parent_context(node, source, types)
@@ -125,14 +166,92 @@ impl JavaExtractor {
         node: &Node,
         source: &[u8],
     ) -> (Option<String>, Option<String>) {
-        let types = &[
-            "class_declaration",
-            "interface_declaration",
-            "enum_declaration",
-            "annotation_type_declaration",
-        ];
-        let (name, kind, _) = get_parent_context(node, source, types);
+        let (name, kind, _) = get_parent_context(node, source, TYPE_DECL_KINDS);
         (name, kind)
+    }
+
+    /// Reduce a declared type to the simple class name used for lookup:
+    /// `List<Foo>` → `List`, `a.b.Foo` → `Foo`, `Foo[]` → `Foo`.
+    /// Returns None for `var` and primitives, which carry no useful type.
+    fn simple_type_name(type_text: &str) -> Option<String> {
+        let base = type_text.split('<').next().unwrap_or(type_text);
+        let base = base.trim_end_matches("[]").trim();
+        let base = base.rsplit('.').next().unwrap_or(base).trim();
+        if base.is_empty() || base == "var" || !base.starts_with(|c: char| c.is_ascii_uppercase()) {
+            return None;
+        }
+        Some(base.to_string())
+    }
+
+    /// Start byte of the closest ancestor of one of `kinds`, if any.
+    fn enclosing_scope(node: &Node, kinds: &[&str]) -> Option<usize> {
+        let mut curr = node.parent();
+        while let Some(p) = curr {
+            if kinds.contains(&p.kind()) {
+                return Some(p.start_byte());
+            }
+            curr = p.parent();
+        }
+        None
+    }
+
+    /// Map `(scope, variable name) → simple type name`. The scope is the
+    /// start byte of the enclosing callable for locals/parameters, or of the
+    /// enclosing type declaration for fields.
+    fn collect_typed_names(&self, root: &Node, source: &[u8]) -> HashMap<(usize, String), String> {
+        let mut map = HashMap::new();
+        let lang = self.language();
+        let query = match Query::new(&lang, QUERY_TYPED_NAMES) {
+            Ok(q) => q,
+            Err(_) => return map,
+        };
+        let names = query.capture_names();
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, *root, source);
+        while let Some(m) = matches.next() {
+            let mut ty = None;
+            let mut name_node = None;
+            for cap in m.captures {
+                match names[cap.index as usize] {
+                    "type" => ty = Some(cap.node),
+                    "name" => name_node = Some(cap.node),
+                    _ => {}
+                }
+            }
+            let (Some(ty), Some(name_node)) = (ty, name_node) else { continue };
+            let Some(simple) = Self::simple_type_name(get_node_text(&ty, source)) else { continue };
+            let is_field = name_node.parent().and_then(|p| p.parent()).map(|d| d.kind())
+                == Some("field_declaration");
+            let scope = if is_field {
+                Self::enclosing_scope(&name_node, TYPE_DECL_KINDS)
+            } else {
+                Self::enclosing_scope(&name_node, CALLABLE_KINDS)
+                    .or_else(|| Self::enclosing_scope(&name_node, TYPE_DECL_KINDS))
+            };
+            let Some(scope) = scope else { continue };
+            map.entry((scope, get_node_text(&name_node, source).to_string()))
+                .or_insert(simple);
+        }
+        map
+    }
+
+    /// Resolve a receiver variable to its declared type, searching the
+    /// enclosing callables (innermost first), then enclosing type declarations.
+    fn lookup_receiver_type(
+        node: &Node,
+        var: &str,
+        typed: &HashMap<(usize, String), String>,
+    ) -> Option<String> {
+        let mut curr = node.parent();
+        while let Some(p) = curr {
+            if CALLABLE_KINDS.contains(&p.kind()) || TYPE_DECL_KINDS.contains(&p.kind()) {
+                if let Some(t) = typed.get(&(p.start_byte(), var.to_string())) {
+                    return Some(t.clone());
+                }
+            }
+            curr = p.parent();
+        }
+        None
     }
 
     /// Extract parameter names from a formal_parameters text like "(int x, String name)"
@@ -317,11 +436,7 @@ impl LanguageExtractor for JavaExtractor {
                 }
             }
 
-            let (context, _, _) = get_parent_context(
-                &node,
-                source,
-                &["class_declaration", "interface_declaration"],
-            );
+            let (context, _, _) = get_parent_context(&node, source, TYPE_DECL_KINDS);
 
             let mut class = ClassData {
                 name: class_name,
@@ -391,6 +506,7 @@ impl LanguageExtractor for JavaExtractor {
     fn find_calls(&self, root: &Node, source: &[u8]) -> Vec<CallData> {
         let mut calls = Vec::new();
         let mut seen_calls: HashSet<String> = HashSet::new();
+        let typed_names = self.collect_typed_names(root, source);
 
         for (node, capture_name) in self.execute_query(QUERY_CALLS, root, source) {
             if capture_name != "name" {
@@ -449,10 +565,15 @@ impl LanguageExtractor for JavaExtractor {
                 if let Some(obj_node) = call_node.child_by_field_name("object") {
                     let obj_text = get_node_text(&obj_node, source);
                     full_name = format!("{}.{}", obj_text, call_name);
-                    // Simple identifier resolution
+                    // Resolve the receiver variable to its declared type when
+                    // known; otherwise keep the identifier (e.g. a static
+                    // `Foo.bar()` call, where the identifier is the type).
                     let base_obj = obj_text.split('.').next().unwrap_or(obj_text);
                     if !base_obj.contains('(') {
-                        inferred_obj_type = Some(base_obj.to_string());
+                        inferred_obj_type = Some(
+                            Self::lookup_receiver_type(&node, base_obj, &typed_names)
+                                .unwrap_or_else(|| base_obj.to_string()),
+                        );
                     }
                 }
             } else if call_node.kind() == "object_creation_expression" {
@@ -665,5 +786,56 @@ public interface MyInterface {
         let names = ext.pre_scan_definitions(&tree.root_node(), &source);
         assert!(names.contains(&"MyService".to_string()));
         assert!(names.contains(&"MyInterface".to_string()));
+    }
+
+    #[test]
+    fn test_find_records() {
+        let code = r#"
+public record CreateOrderRequest(String customerId, int qty) implements Request {
+    public CreateOrderRequest {
+        if (qty < 0) throw new IllegalArgumentException();
+    }
+    public boolean isBulk() { return qty > 10; }
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = JavaExtractor;
+        let classes = ext.find_classes(&tree.root_node(), &source, false);
+        assert_eq!(classes.len(), 1);
+        assert_eq!(classes[0].name, "CreateOrderRequest");
+        assert_eq!(classes[0].bases, vec!["Request".to_string()]);
+
+        let functions = ext.find_functions(&tree.root_node(), &source, false);
+        let is_bulk = functions.iter().find(|f| f.name == "isBulk").unwrap();
+        assert_eq!(is_bulk.class_context.as_deref(), Some("CreateOrderRequest"));
+        assert!(functions.iter().any(|f| f.name == "CreateOrderRequest"));
+
+        let names = ext.pre_scan_definitions(&tree.root_node(), &source);
+        assert!(names.contains(&"CreateOrderRequest".to_string()));
+    }
+
+    #[test]
+    fn test_call_receiver_type_inferred_from_declarations() {
+        let code = r#"
+public class PointController {
+    private final PointService service;
+    public Resp upsert(Req req) {
+        List<String> items = new ArrayList<>();
+        items.add("x");
+        req.validate();
+        Helper.run();
+        return service.upsert(req);
+    }
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = JavaExtractor.find_calls(&tree.root_node(), &source);
+        let ty = |full: &str| {
+            calls.iter().find(|c| c.full_name == full).unwrap().inferred_obj_type.clone()
+        };
+        assert_eq!(ty("service.upsert").as_deref(), Some("PointService")); // field
+        assert_eq!(ty("items.add").as_deref(), Some("List")); // local, generics stripped
+        assert_eq!(ty("req.validate").as_deref(), Some("Req")); // parameter
+        assert_eq!(ty("Helper.run").as_deref(), Some("Helper")); // static call
     }
 }
