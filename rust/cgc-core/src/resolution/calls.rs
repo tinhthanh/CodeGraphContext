@@ -97,6 +97,18 @@ pub fn resolve_function_call(
         base_obj.unwrap_or(called_name.as_str())
     };
 
+    // `obj.method()` on a receiver other than self/this: the target lives on
+    // obj's type, never on a same-named function of the caller's file.
+    let qualified_other = base_obj.map_or(false, |b| !b.is_empty() && !self_receivers.contains(&b));
+    // Receiver whose (capitalised) type is known but defined outside the repo,
+    // e.g. `list.get()` with `List<Foo> list` — don't guess a target by name.
+    let external_receiver_type = qualified_other
+        && call.inferred_obj_type.as_deref().map_or(false, |t| {
+            t.starts_with(|c: char| c.is_ascii_uppercase())
+                && !imports_map.contains_key(t)
+                && !local_names.contains(t)
+        });
+
     let mut resolved_path: Option<String> = None;
     let mut is_unresolved_external = false;
 
@@ -150,17 +162,37 @@ pub fn resolve_function_call(
 
     // 5. Fallback: try called_name directly
     if resolved_path.is_none() {
-        if local_names.contains(called_name.as_str()) {
+        if qualified_other && (external_receiver_type || !imports_map.contains_key(called_name.as_str())) {
+            // Unresolvable receiver call. Pointing it at the caller's file
+            // would bind it to a same-named local function (false recursion),
+            // so drop it in that case; otherwise keep it as external.
+            if local_names.contains(called_name.as_str()) {
+                return None;
+            }
+            resolved_path = Some(caller_file_path.to_string());
+        } else if !qualified_other && local_names.contains(called_name.as_str()) {
             resolved_path = Some(caller_file_path.to_string());
             is_unresolved_external = false;
-        } else if let Some(candidates) = imports_map.get(called_name.as_str()) {
+        } else if let Some(all_candidates) = imports_map.get(called_name.as_str()) {
+            // A receiver call can't target the caller's own namesake.
+            let candidates: Vec<&String> = all_candidates
+                .iter()
+                .filter(|p| {
+                    !(qualified_other
+                        && p.as_str() == caller_file_path
+                        && local_names.contains(called_name.as_str()))
+                })
+                .collect();
+            if candidates.is_empty() && qualified_other && local_names.contains(called_name.as_str()) {
+                return None;
+            }
             if !candidates.is_empty() {
                 // Try matching via local imports
                 let mut found = false;
-                for p in candidates {
+                for p in &candidates {
                     for imp_name in local_imports.values() {
                         if p.contains(&imp_name.replace('.', "/")) {
-                            resolved_path = Some(p.clone());
+                            resolved_path = Some((*p).clone());
                             is_unresolved_external = false;
                             found = true;
                             break;
@@ -171,7 +203,7 @@ pub fn resolve_function_call(
                     }
                 }
                 if resolved_path.is_none() {
-                    resolved_path = Some(candidates[0].clone());
+                    resolved_path = Some(candidates[0].to_string());
                 }
             }
         } else {
@@ -484,5 +516,73 @@ mod tests {
 
         assert_eq!(groups.fn_to_cls.len(), 1);
         assert_eq!(groups.fn_to_cls[0].called_name, "Helper");
+    }
+
+    fn receiver_call(name: &str, full: &str, obj_type: Option<&str>) -> CallInput {
+        CallInput {
+            name: name.to_string(),
+            full_name: full.to_string(),
+            line_number: 10,
+            args: vec![],
+            inferred_obj_type: obj_type.map(|s| s.to_string()),
+            context_name: Some(name.to_string()),
+            context_type: Some("method_declaration".to_string()),
+            context_line: Some(9),
+            class_context_name: None,
+        }
+    }
+
+    #[test]
+    fn test_receiver_call_resolves_via_inferred_type_not_local_namesake() {
+        // Controller.upsert() { return service.upsert(req); }
+        let call = receiver_call("upsert", "service.upsert", Some("PointService"));
+        let local_names: HashSet<String> = ["upsert".to_string()].into();
+        let mut imports_map = HashMap::new();
+        imports_map.insert("PointService".to_string(), vec!["/repo/PointService.java".to_string()]);
+
+        let r = resolve_function_call(
+            &call, "/repo/PointController.java", &local_names, &HashMap::new(), &imports_map, false,
+        )
+        .unwrap();
+        assert_eq!(r.called_file_path, "/repo/PointService.java");
+    }
+
+    #[test]
+    fn test_unresolved_receiver_call_is_not_bound_to_local_namesake() {
+        // list.add(x) inside a local add(): must not become add → add.
+        let call = receiver_call("add", "items.add", Some("List"));
+        let local_names: HashSet<String> = ["add".to_string()].into();
+        let r = resolve_function_call(
+            &call, "/repo/Cart.java", &local_names, &HashMap::new(), &HashMap::new(), false,
+        );
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn test_this_receiver_still_resolves_locally() {
+        let call = receiver_call("helper", "this.helper", None);
+        let local_names: HashSet<String> = ["helper".to_string()].into();
+        let r = resolve_function_call(
+            &call, "/repo/A.java", &local_names, &HashMap::new(), &HashMap::new(), false,
+        )
+        .unwrap();
+        assert_eq!(r.called_file_path, "/repo/A.java");
+    }
+
+    #[test]
+    fn test_receiver_call_candidates_skip_caller_namesake() {
+        // BaseCrudService.findChangesSince() { getRepository().findChangesSince(..) }
+        let call = receiver_call("findChangesSince", "getRepository().findChangesSince", None);
+        let local_names: HashSet<String> = ["findChangesSince".to_string()].into();
+        let mut imports_map = HashMap::new();
+        imports_map.insert(
+            "findChangesSince".to_string(),
+            vec!["/repo/BaseCrudService.java".to_string(), "/repo/Repo.java".to_string()],
+        );
+        let r = resolve_function_call(
+            &call, "/repo/BaseCrudService.java", &local_names, &HashMap::new(), &imports_map, false,
+        )
+        .unwrap();
+        assert_eq!(r.called_file_path, "/repo/Repo.java");
     }
 }
