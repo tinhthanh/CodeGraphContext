@@ -305,8 +305,12 @@ impl LanguageExtractor for PythonExtractor {
 
             // Decorators
             let mut decorators = Vec::new();
-            for i in 0..func_node.child_count() {
-                if let Some(child) = func_node.child(i) {
+            // In tree-sitter-python, decorators are children of the parent
+            // decorated_definition, not of the definition node itself.
+            let decorated = func_node.parent().filter(|p| p.kind() == "decorated_definition");
+            let deco_owner = decorated.unwrap_or(func_node);
+            for i in 0..deco_owner.child_count() {
+                if let Some(child) = deco_owner.child(i) {
                     if child.kind() == "decorator" {
                         decorators.push(get_node_text(&child, source).to_string());
                     }
@@ -384,8 +388,12 @@ impl LanguageExtractor for PythonExtractor {
             }
 
             let mut decorators = Vec::new();
-            for i in 0..class_node.child_count() {
-                if let Some(child) = class_node.child(i) {
+            // In tree-sitter-python, decorators are children of the parent
+            // decorated_definition, not of the definition node itself.
+            let decorated = class_node.parent().filter(|p| p.kind() == "decorated_definition");
+            let deco_owner = decorated.unwrap_or(class_node);
+            for i in 0..deco_owner.child_count() {
+                if let Some(child) = deco_owner.child(i) {
                     if child.kind() == "decorator" {
                         decorators.push(get_node_text(&child, source).to_string());
                     }
@@ -797,6 +805,30 @@ from ..pkg.mod import w
         let imports = ext.find_imports(&tree.root_node(), &source);
         let full: Vec<&str> = imports.iter().map(|i| i.full_import_name.as_str()).collect();
         assert_eq!(full, vec![".x", "..y", ".mod.z", "..pkg.mod.w"]);
+    }
+
+    #[test]
+    fn test_decorators() {
+        let code = r#"
+@dataclass
+@other(1)
+class Point:
+    @staticmethod
+    def make():
+        pass
+
+    def plain(self):
+        pass
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = PythonExtractor;
+        let classes = ext.find_classes(&tree.root_node(), &source, false);
+        assert_eq!(classes[0].decorators, vec!["@dataclass", "@other(1)"]);
+        let funcs = ext.find_functions(&tree.root_node(), &source, false);
+        let make = funcs.iter().find(|f| f.name == "make").unwrap();
+        assert_eq!(make.decorators, vec!["@staticmethod"]);
+        let plain = funcs.iter().find(|f| f.name == "plain").unwrap();
+        assert!(plain.decorators.is_empty());
     }
 
     #[test]
