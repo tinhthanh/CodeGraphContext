@@ -19,6 +19,11 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+          # Native ARM runner (free for public repos): builds the 19 C/C++
+          # tree-sitter grammars without a cross toolchain. Covers Graviton /
+          # Ampere servers and ARM Docker images.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-14
@@ -98,7 +103,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest]
         python: ["3.11", "3.12"]
 
     steps:
