@@ -176,8 +176,11 @@ impl GoExtractor {
                 if child.kind() == "parameter_declaration" {
                     let type_node = child.child_by_field_name("type");
                     if let Some(tn) = type_node {
-                        let type_text = get_node_text(&tn, source);
-                        return Some(type_text.trim_start_matches('*').to_string());
+                        // Strip pointer and type parameters: `*List[T]` -> `List`.
+                        return self.base_type_name(&tn, source).or_else(|| {
+                            let type_text = get_node_text(&tn, source);
+                            Some(type_text.trim_start_matches('*').to_string())
+                        });
                     }
                 }
             }
@@ -791,6 +794,28 @@ type Key interface {
         assert!(num.bases.is_empty());
         let key = classes.iter().find(|c| c.name == "Key").unwrap();
         assert!(key.bases.is_empty());
+    }
+
+    #[test]
+    fn test_generic_receiver_strips_type_params() {
+        let code = r#"
+package main
+
+type List[T any] struct {
+    items []T
+}
+
+func (l *List[T]) Push(v T) {}
+
+func (p Pair[K, V]) Key() K { return p.k }
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = GoExtractor;
+        let funcs = ext.find_functions(&tree.root_node(), &source, false);
+        let push = funcs.iter().find(|f| f.name == "Push").unwrap();
+        assert_eq!(push.class_context.as_deref(), Some("List"));
+        let key = funcs.iter().find(|f| f.name == "Key").unwrap();
+        assert_eq!(key.class_context.as_deref(), Some("Pair"));
     }
 
     #[test]
