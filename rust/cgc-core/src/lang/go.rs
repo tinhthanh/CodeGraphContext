@@ -185,6 +185,47 @@ impl GoExtractor {
         None
     }
 
+    /// Bare type name of a type node: `T`, `*T`, `pkg.T`, `T[U]` all yield `T`.
+    fn base_type_name(&self, type_node: &Node, source: &[u8]) -> Option<String> {
+        match type_node.kind() {
+            "type_identifier" => Some(get_node_text(type_node, source).to_string()),
+            "pointer_type" => type_node
+                .named_child(0)
+                .and_then(|inner| self.base_type_name(&inner, source)),
+            "qualified_type" => type_node
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source).to_string()),
+            "generic_type" => type_node
+                .child_by_field_name("type")
+                .and_then(|inner| self.base_type_name(&inner, source)),
+            _ => None,
+        }
+    }
+
+    /// Embedded (anonymous) fields of a struct_type, e.g. `Base`, `*Base`, `pkg.Base`.
+    fn struct_embedded_bases(&self, struct_type: &Node, source: &[u8]) -> Vec<String> {
+        let mut bases = Vec::new();
+        for i in 0..struct_type.named_child_count() {
+            let Some(field_list) = struct_type.named_child(i) else { continue };
+            if field_list.kind() != "field_declaration_list" {
+                continue;
+            }
+            for j in 0..field_list.named_child_count() {
+                let Some(field) = field_list.named_child(j) else { continue };
+                if field.kind() != "field_declaration" || field.child_by_field_name("name").is_some() {
+                    continue;
+                }
+                if let Some(base) = field
+                    .child_by_field_name("type")
+                    .and_then(|t| self.base_type_name(&t, source))
+                {
+                    bases.push(base);
+                }
+            }
+        }
+        bases
+    }
+
     fn get_docstring(&self, func_node: &Node, source: &[u8]) -> Option<String> {
         let mut prev = func_node.prev_sibling();
         while let Some(sib) = prev {
@@ -382,12 +423,18 @@ impl LanguageExtractor for GoExtractor {
                 None => continue,
             };
             let name = get_node_text(&node, source).to_string();
+            let bases = node
+                .parent()
+                .and_then(|spec| spec.child_by_field_name("type"))
+                .filter(|t| t.kind() == "struct_type")
+                .map(|t| self.struct_embedded_bases(&t, source))
+                .unwrap_or_default();
 
             let mut class = ClassData {
                 name,
                 line_number: type_decl.start_position().row + 1,
                 end_line: type_decl.end_position().row + 1,
-                bases: Vec::new(),
+                bases,
                 context: None,
                 decorators: Vec::new(),
                 lang: self.lang_name().to_string(),
@@ -666,6 +713,26 @@ type Speaker interface {
         assert_eq!(classes.len(), 2);
         assert!(classes.iter().any(|c| c.name == "Animal"));
         assert!(classes.iter().any(|c| c.name == "Speaker"));
+    }
+
+    #[test]
+    fn test_struct_embedded_fields_as_bases() {
+        let code = r#"
+package main
+
+type Server struct {
+    Base
+    *Logger
+    http.Handler
+    name string
+    a, b int
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = GoExtractor;
+        let classes = ext.find_classes(&tree.root_node(), &source, false);
+        let server = classes.iter().find(|c| c.name == "Server").unwrap();
+        assert_eq!(server.bases, vec!["Base", "Logger", "Handler"]);
     }
 
     #[test]
