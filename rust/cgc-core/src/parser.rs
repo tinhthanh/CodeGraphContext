@@ -126,15 +126,7 @@ pub fn parse_and_prescan_parallel(
                             names.push(f.name.clone());
                         }
                         for c in &data.classes {
-                            // Strip [interface]/[type] prefix added by TS extractor
-                            let clean = if c.name.starts_with("[interface] ") {
-                                c.name.strip_prefix("[interface] ").unwrap_or(&c.name)
-                            } else if c.name.starts_with("[type] ") {
-                                c.name.strip_prefix("[type] ").unwrap_or(&c.name)
-                            } else {
-                                &c.name
-                            };
-                            names.push(clean.to_string());
+                            names.push(c.name.clone());
                         }
                         names
                     }
@@ -222,4 +214,52 @@ pub fn pre_scan_for_imports(
         }
     }
     imports_map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(lang: &str, ext: &str, code: &str) -> Vec<(String, String)> {
+        let path = std::env::temp_dir().join(format!("cgc_kind_test_{lang}.{ext}"));
+        fs::write(&path, code).unwrap();
+        match parse_file(path.to_str().unwrap(), lang, false, false) {
+            ParseResult::Ok(d) => d.classes.into_iter().map(|c| (c.name, c.kind)).collect(),
+            ParseResult::Err { error, .. } => panic!("{error}"),
+        }
+    }
+
+    fn has(v: &[(String, String)], name: &str, kind: &str) -> bool {
+        v.iter().any(|(n, k)| n == name && k == kind)
+    }
+
+    #[test]
+    fn test_class_kinds_across_languages() {
+        let j = kinds("java", "java", "class A {} interface B {} enum C { X } record D(int x) {} @interface E {}");
+        for (n, k) in [("A", "class"), ("B", "interface"), ("C", "enum"), ("D", "record"), ("E", "annotation")] {
+            assert!(has(&j, n, k), "java {n} {k}: {j:?}");
+        }
+        let kt = kinds("kotlin", "kt", "class A\ninterface B\nenum class C { X }\nobject D\ndata class E(val x: Int)\n");
+        for (n, k) in [("A", "class"), ("B", "interface"), ("C", "enum"), ("D", "object"), ("E", "class")] {
+            assert!(has(&kt, n, k), "kotlin {n} {k}: {kt:?}");
+        }
+        let go = kinds("go", "go", "package p\ntype A struct{}\ntype B interface{ M() }\n");
+        assert!(has(&go, "A", "struct") && has(&go, "B", "interface"), "go: {go:?}");
+        let rs = kinds("rust", "rs", "struct A; enum B { X } trait C {}");
+        assert!(has(&rs, "A", "struct") && has(&rs, "B", "enum") && has(&rs, "C", "trait"), "rust: {rs:?}");
+        let ts = kinds("typescript", "ts", "class A {}\ninterface B {}\ntype C = string;\nenum D { X }\n");
+        assert!(has(&ts, "A", "class") && has(&ts, "B", "interface") && has(&ts, "C", "type_alias"), "ts: {ts:?}");
+        let sw = kinds("swift", "swift", "class A {}\nstruct B {}\nprotocol C {}\nenum D { case x }\n");
+        assert!(has(&sw, "A", "class") && has(&sw, "B", "struct") && has(&sw, "C", "interface"), "swift: {sw:?}");
+        let cs = kinds("c_sharp", "cs", "class A {} interface B {} struct C {} enum D { X } record E(int X);");
+        assert!(has(&cs, "A", "class") && has(&cs, "B", "interface") && has(&cs, "C", "struct"), "c#: {cs:?}");
+        let cpp = kinds("cpp", "cpp", "class A {}; struct B {};");
+        assert!(has(&cpp, "A", "class") && has(&cpp, "B", "struct"), "cpp: {cpp:?}");
+        let php = kinds("php", "php", "<?php\nclass A {}\ninterface B {}\ntrait C {}\n");
+        assert!(has(&php, "A", "class") && has(&php, "B", "interface") && has(&php, "C", "trait"), "php: {php:?}");
+        let sc = kinds("scala", "scala", "class A\ntrait B\nobject C\n");
+        assert!(has(&sc, "A", "class") && has(&sc, "B", "trait") && has(&sc, "C", "object"), "scala: {sc:?}");
+        let rb = kinds("ruby", "rb", "class A\nend\nmodule B\nend\n");
+        assert!(has(&rb, "A", "class") && has(&rb, "B", "module"), "ruby: {rb:?}");
+    }
 }

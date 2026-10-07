@@ -1,7 +1,7 @@
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{class_kind, get_node_text, get_parent_context, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -241,6 +241,7 @@ impl LanguageExtractor for RubyExtractor {
             );
 
             let mut class = ClassData {
+                kind: class_kind(&class_node),
                 name,
                 line_number: class_node.start_position().row + 1,
                 end_line: class_node.end_position().row + 1,
@@ -279,6 +280,7 @@ impl LanguageExtractor for RubyExtractor {
             );
 
             let mut class = ClassData {
+                kind: class_kind(&module_node),
                 name,
                 line_number: module_node.start_position().row + 1,
                 end_line: module_node.end_position().row + 1,

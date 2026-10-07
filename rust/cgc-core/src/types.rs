@@ -38,6 +38,10 @@ pub struct FunctionData {
 #[derive(Debug, Clone)]
 pub struct ClassData {
     pub name: String,
+    /// What kind of type this is: class, interface, enum, record, struct,
+    /// trait, object, companion, union, annotation, type_alias, module,
+    /// mixin, extension, macro, ... (see `lang::class_kind`).
+    pub kind: String,
     pub line_number: usize,
     pub end_line: usize,
     pub bases: Vec<String>,

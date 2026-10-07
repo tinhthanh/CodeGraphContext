@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{class_kind, get_node_text, get_parent_context, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -318,6 +318,7 @@ impl LanguageExtractor for CExtractor {
             let (context, _, _) = self.get_parent_context_c(&struct_node, source);
 
             let mut class = ClassData {
+                kind: class_kind(&struct_node),
                 name,
                 line_number: struct_node.start_position().row + 1,
                 end_line: struct_node.end_position().row + 1,
@@ -349,6 +350,7 @@ impl LanguageExtractor for CExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&union_node),
                 name,
                 line_number: union_node.start_position().row + 1,
                 end_line: union_node.end_position().row + 1,
@@ -380,6 +382,7 @@ impl LanguageExtractor for CExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&enum_node),
                 name,
                 line_number: enum_node.start_position().row + 1,
                 end_line: enum_node.end_position().row + 1,
@@ -411,6 +414,7 @@ impl LanguageExtractor for CExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&macro_node),
                 name,
                 line_number: macro_node.start_position().row + 1,
                 end_line: macro_node.end_position().row + 1,
