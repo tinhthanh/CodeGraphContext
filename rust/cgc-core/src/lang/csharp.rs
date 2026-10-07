@@ -256,6 +256,7 @@ impl LanguageExtractor for CSharpExtractor {
             let class_context = self.get_class_context_csharp(&func_node, source);
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -489,6 +490,7 @@ impl LanguageExtractor for CSharpExtractor {
             let class_context = self.get_class_context_csharp(&node, source);
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: call_name.clone(),
                 full_name: call_name,
                 line_number,

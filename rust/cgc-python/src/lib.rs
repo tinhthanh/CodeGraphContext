@@ -212,6 +212,7 @@ fn py_dict_to_file_call_data(fd: &Bound<'_, PyDict>) -> PyResult<FileCallData> {
     // Function names, and methods grouped by their declaring class
     let mut function_names = HashSet::new();
     let mut class_methods: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut method_returns: HashMap<(String, String), String> = HashMap::new();
     if let Some(funcs) = fd.get_item("functions")? {
         let funcs_list: &Bound<'_, PyList> = funcs.downcast()?;
         for f in funcs_list.iter() {
@@ -222,6 +223,12 @@ fn py_dict_to_file_call_data(fd: &Bound<'_, PyDict>) -> PyResult<FileCallData> {
                     .get_item("class_context")?
                     .and_then(|v| v.extract().ok());
                 if let Some(cls) = class_ctx {
+                    let ret: Option<String> = f_dict
+                        .get_item("return_type")?
+                        .and_then(|v| v.extract().ok());
+                    if let Some(ret) = ret {
+                        method_returns.insert((cls.clone(), n.clone()), ret);
+                    }
                     class_methods.entry(cls).or_default().insert(n.clone());
                 }
                 function_names.insert(n);
@@ -246,6 +253,26 @@ fn py_dict_to_file_call_data(fd: &Bound<'_, PyDict>) -> PyResult<FileCallData> {
                     class_bases.insert(n.clone(), bases);
                 }
                 class_names.insert(n);
+            }
+        }
+    }
+
+    // Field types: variables declared directly in a class body
+    // (context == class_context), incl. Java record components.
+    let mut field_types: HashMap<(String, String), String> = HashMap::new();
+    if let Some(vars) = fd.get_item("variables")? {
+        let vars_list: &Bound<'_, PyList> = vars.downcast()?;
+        for v in vars_list.iter() {
+            let v_dict: &Bound<'_, PyDict> = v.downcast()?;
+            let get = |k: &str| -> PyResult<Option<String>> {
+                Ok(v_dict.get_item(k)?.and_then(|x| x.extract().ok()))
+            };
+            if let (Some(name), Some(ty), Some(ctx), Some(cls)) =
+                (get("name")?, get("type")?, get("context")?, get("class_context")?)
+            {
+                if ctx == cls {
+                    field_types.entry((cls, name)).or_insert(ty);
+                }
             }
         }
     }
@@ -290,6 +317,8 @@ fn py_dict_to_file_call_data(fd: &Bound<'_, PyDict>) -> PyResult<FileCallData> {
         calls,
         class_methods,
         class_bases,
+        method_returns,
+        field_types,
     })
 }
 
@@ -317,6 +346,10 @@ fn py_dict_to_call_input(c: &Bound<'_, PyDict>) -> PyResult<CallInput> {
     let inferred_obj_type: Option<String> = c
         .get_item("inferred_obj_type")?
         .and_then(|v| v.extract().ok());
+    let receiver_chain: Vec<String> = c
+        .get_item("receiver_chain")?
+        .and_then(|v| v.extract().ok())
+        .unwrap_or_default();
 
     // Context is a tuple (name, type, line) or None
     let (ctx_name, ctx_type, ctx_line) = if let Some(ctx) = c.get_item("context")? {
@@ -352,6 +385,7 @@ fn py_dict_to_call_input(c: &Bound<'_, PyDict>) -> PyResult<CallInput> {
         line_number,
         args,
         inferred_obj_type,
+        receiver_chain,
         context_name: ctx_name,
         context_type: ctx_type,
         context_line: ctx_line,

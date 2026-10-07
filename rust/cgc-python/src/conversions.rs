@@ -74,6 +74,7 @@ fn function_to_py(py: Python<'_>, f: &FunctionData) -> PyResult<PyObject> {
     dict.set_item("end_line", f.end_line)?;
     dict.set_item("args", &f.args)?;
     dict.set_item("cyclomatic_complexity", f.cyclomatic_complexity)?;
+    dict.set_item("return_type", &f.return_type)?;
     dict.set_item("context", &f.context)?;
     dict.set_item("context_type", &f.context_type)?;
     dict.set_item("class_context", &f.class_context)?;
@@ -154,6 +155,7 @@ fn call_to_py(py: Python<'_>, c: &CallData) -> PyResult<PyObject> {
     dict.set_item("line_number", c.line_number)?;
     dict.set_item("args", &c.args)?;
     dict.set_item("inferred_obj_type", &c.inferred_obj_type)?;
+    dict.set_item("receiver_chain", &c.receiver_chain)?;
 
     // Context as tuple (name, type, line)
     let ctx = pyo3::types::PyTuple::new(py, &[

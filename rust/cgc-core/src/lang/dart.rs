@@ -224,6 +224,7 @@ impl LanguageExtractor for DartExtractor {
             );
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line,
@@ -381,6 +382,7 @@ impl LanguageExtractor for DartExtractor {
             );
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: call_name.clone(),
                 full_name: call_name,
                 line_number: node.start_position().row + 1,

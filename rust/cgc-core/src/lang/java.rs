@@ -261,6 +261,33 @@ impl JavaExtractor {
         (!NON_BEAN_TYPES.contains(&name.as_str())).then_some(name)
     }
 
+    /// Peel a receiver expression into its root and the member accesses
+    /// applied to it: `repo.findById(id).get()` → (repo, ["findById()", "get()"]),
+    /// `order.customer.name` → (order, ["customer", "name"]). The root is None
+    /// for an implicit-`this` call (`getRepo().find()`).
+    fn split_receiver<'t>(node: Node<'t>, source: &[u8]) -> (Option<Node<'t>>, Vec<String>) {
+        let peel = |inner: Option<Node<'t>>| match inner {
+            Some(o) => Self::split_receiver(o, source),
+            None => (None, Vec::new()),
+        };
+        match node.kind() {
+            "method_invocation" => {
+                let name = node.child_by_field_name("name").map(|n| get_node_text(&n, source).to_string());
+                let (root, mut chain) = peel(node.child_by_field_name("object"));
+                chain.push(format!("{}()", name.unwrap_or_default()));
+                (root, chain)
+            }
+            "field_access" => {
+                let field = node.child_by_field_name("field").map(|n| get_node_text(&n, source).to_string());
+                let (root, mut chain) = peel(node.child_by_field_name("object"));
+                chain.push(field.unwrap_or_default());
+                (root, chain)
+            }
+            "parenthesized_expression" => peel(node.named_child(0)),
+            _ => (Some(node), Vec::new()),
+        }
+    }
+
     fn child_of_kind<'t>(node: &Node<'t>, kind: &str) -> Option<Node<'t>> {
         (0..node.child_count())
             .filter_map(|i| node.child(i))
@@ -474,6 +501,10 @@ impl LanguageExtractor for JavaExtractor {
             let complexity = self.calculate_complexity(&node);
 
             let mut func = FunctionData {
+                return_type: (node.kind() == "method_declaration")
+                    .then(|| node.child_by_field_name("type"))
+                    .flatten()
+                    .map(|t| get_node_text(&t, source).split_whitespace().collect::<Vec<_>>().join(" ")),
                 name: func_name,
                 line_number: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
@@ -675,6 +706,7 @@ impl LanguageExtractor for JavaExtractor {
             // Determine full_name and inferred_obj_type
             let mut full_name = call_name.clone();
             let mut inferred_obj_type = None;
+            let mut receiver_chain = Vec::new();
 
             if call_node.kind() == "method_invocation" {
                 if let Some(obj_node) = call_node.child_by_field_name("object") {
@@ -697,6 +729,33 @@ impl LanguageExtractor for JavaExtractor {
                         };
                         inferred_obj_type = Some(resolved.unwrap_or_else(|| base_obj.to_string()));
                     }
+
+                    // Chained receivers: type the root, keep the member path for
+                    // the resolver (`a.b().c()`, `getRepo().find()`, `new X().y()`).
+                    let (root, chain) = Self::split_receiver(obj_node, source);
+                    let this_field = root.map_or(false, |r| r.kind() == "this") && chain.len() == 1
+                        && !chain[0].ends_with("()");
+                    if !chain.is_empty() && !this_field {
+                        let root_type = match root {
+                            None => self.get_class_context(&node, source).0,
+                            Some(r) => match r.kind() {
+                                "this" => self.get_class_context(&node, source).0,
+                                "identifier" => {
+                                    let id = get_node_text(&r, source);
+                                    Self::lookup_receiver_type(&node, id, &typed_names)
+                                        .or_else(|| id.starts_with(|c: char| c.is_ascii_uppercase()).then(|| id.to_string()))
+                                }
+                                "object_creation_expression" => r
+                                    .child_by_field_name("type")
+                                    .and_then(|t| Self::simple_type_name(get_node_text(&t, source))),
+                                _ => None,
+                            },
+                        };
+                        if let Some(t) = root_type {
+                            inferred_obj_type = Some(t);
+                            receiver_chain = chain;
+                        }
+                    }
                 }
             } else if call_node.kind() == "object_creation_expression" {
                 if let Some(type_node) = call_node.child_by_field_name("type") {
@@ -708,6 +767,7 @@ impl LanguageExtractor for JavaExtractor {
             let (class_name, class_type) = self.get_class_context(&node, source);
 
             calls.push(CallData {
+                receiver_chain,
                 name: call_name,
                 full_name,
                 line_number,
@@ -772,6 +832,29 @@ impl LanguageExtractor for JavaExtractor {
             });
         }
 
+
+        // Record components are the record's fields (and accessor return types).
+        for (rec, cap) in self.execute_query("(record_declaration) @r", root, source) {
+            if cap != "r" {
+                continue;
+            }
+            let (Some(name), Some(params)) = (rec.child_by_field_name("name"), rec.child_by_field_name("parameters")) else { continue };
+            let rec_name = get_node_text(&name, source).to_string();
+            for i in 0..params.child_count() {
+                let Some(p) = params.child(i).filter(|c| c.kind() == "formal_parameter") else { continue };
+                let (Some(ty), Some(n)) = (p.child_by_field_name("type"), p.child_by_field_name("name")) else { continue };
+                variables.push(VariableData {
+                    name: get_node_text(&n, source).to_string(),
+                    line_number: n.start_position().row + 1,
+                    value: None,
+                    type_annotation: Some(get_node_text(&ty, source).to_string()),
+                    context: Some(rec_name.clone()),
+                    class_context: Some(rec_name.clone()),
+                    lang: self.lang_name().to_string(),
+                    is_dependency: false,
+                });
+            }
+        }
         variables
     }
 
@@ -1157,5 +1240,38 @@ public class PetDto { private final String name; }
         assert_eq!(classes[0].decorators, vec!["@Service", "@RequiredArgsConstructor"]);
         let functions = JavaExtractor.find_functions(&tree.root_node(), &source, false);
         assert!(functions.iter().all(|f| f.decorators.is_empty()));
+    }
+
+    #[test]
+    fn test_receiver_chain_return_type_and_record_fields() {
+        let code = r#"
+public record PetDto(String name, Customer owner) {}
+public class Svc {
+    private final PetRepository repo;
+    public Pet load(String id) {
+        repo.findById(id).orElseThrow().vaccinate();
+        getRepo().findAll();
+        new Builder().name("x").build();
+        return null;
+    }
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = JavaExtractor;
+        let calls = ext.find_calls(&tree.root_node(), &source);
+        let get = |n: &str| calls.iter().find(|c| c.name == n).unwrap();
+        let v = get("vaccinate");
+        assert_eq!(v.inferred_obj_type.as_deref(), Some("PetRepository"));
+        assert_eq!(v.receiver_chain, vec!["findById()", "orElseThrow()"]);
+        let f = get("findAll");
+        assert_eq!((f.inferred_obj_type.as_deref(), f.receiver_chain.clone()), (Some("Svc"), vec!["getRepo()".to_string()]));
+        let b = get("build");
+        assert_eq!((b.inferred_obj_type.as_deref(), b.receiver_chain.clone()), (Some("Builder"), vec!["name()".to_string()]));
+
+        let funcs = ext.find_functions(&tree.root_node(), &source, false);
+        assert_eq!(funcs.iter().find(|f| f.name == "load").unwrap().return_type.as_deref(), Some("Pet"));
+        let vars = ext.find_variables(&tree.root_node(), &source);
+        let owner = vars.iter().find(|v| v.name == "owner").unwrap();
+        assert_eq!((owner.type_annotation.as_deref(), owner.context.as_deref()), (Some("Customer"), Some("PetDto")));
     }
 }
