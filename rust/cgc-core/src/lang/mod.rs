@@ -57,6 +57,12 @@ pub trait LanguageExtractor: Send + Sync {
     fn find_variables(&self, root: &Node, source: &[u8]) -> Vec<VariableData>;
 
     /// Pre-scan: extract top-level definition names for imports_map.
+    /// Dependency-injection points. Only languages with a DI convention
+    /// (Java/Spring) implement this.
+    fn find_injections(&self, _root: &Node, _source: &[u8]) -> Vec<InjectionData> {
+        Vec::new()
+    }
+
     fn pre_scan_definitions(&self, root: &Node, source: &[u8]) -> Vec<String> {
         let mut names = Vec::new();
         for f in self.find_functions(root, source, false) {

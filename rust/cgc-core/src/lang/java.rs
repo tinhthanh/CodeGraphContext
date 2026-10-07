@@ -107,6 +107,27 @@ const TYPE_DECL_KINDS: &[&str] = &[
     "annotation_type_declaration",
 ];
 
+/// Spring stereotype annotations marking a class as a managed bean.
+const SPRING_STEREOTYPES: &[&str] = &[
+    "Service",
+    "Component",
+    "RestController",
+    "Controller",
+    "Repository",
+    "Configuration",
+    "ControllerAdvice",
+    "RestControllerAdvice",
+];
+
+/// Field/setter annotations that request injection.
+const INJECT_ANNOTATIONS: &[&str] = &["Autowired", "Inject", "Resource"];
+
+/// Types that are never beans (config values, boxed primitives).
+const NON_BEAN_TYPES: &[&str] = &[
+    "String", "Integer", "Long", "Boolean", "Double", "Float", "Short", "Byte",
+    "Character", "Object", "BigDecimal", "Duration", "Instant",
+];
+
 /// Node kinds that scope local variables and parameters.
 const CALLABLE_KINDS: &[&str] = &[
     "method_declaration",
@@ -181,6 +202,63 @@ impl JavaExtractor {
             return None;
         }
         Some(base.to_string())
+    }
+
+    /// Annotations on a declaration as (simple name, full text), e.g.
+    /// ("GetMapping", "@GetMapping(\"/x\")").
+    fn annotations(node: &Node, source: &[u8]) -> Vec<(String, String)> {
+        let Some(mods) = Self::child_of_kind(node, "modifiers") else { return Vec::new() };
+        (0..mods.child_count())
+            .filter_map(|i| mods.child(i))
+            .filter(|c| matches!(c.kind(), "marker_annotation" | "annotation"))
+            .filter_map(|a| {
+                let name = get_node_text(&a.child_by_field_name("name")?, source);
+                let simple = name.rsplit('.').next().unwrap_or(name).to_string();
+                Some((simple, get_node_text(&a, source).to_string()))
+            })
+            .collect()
+    }
+
+    fn has_modifier(node: &Node, keyword: &str) -> bool {
+        Self::child_of_kind(node, "modifiers").map_or(false, |m| {
+            (0..m.child_count()).filter_map(|i| m.child(i)).any(|c| c.kind() == keyword)
+        })
+    }
+
+    /// The bean type injected for a declared type: `PetService` → PetService,
+    /// `List<Handler>` / `Optional<X>` / `ObjectProvider<X>` → element type,
+    /// `Map<String, Handler>` → value type. None for non-bean types.
+    fn injected_type_name(type_text: &str) -> Option<String> {
+        let type_text = type_text.trim();
+        let base = type_text.split('<').next().unwrap_or(type_text).trim();
+        let base = base.rsplit('.').next().unwrap_or(base);
+        let inner = match (type_text.find('<'), type_text.rfind('>')) {
+            (Some(l), Some(r)) if r > l => Some(&type_text[l + 1..r]),
+            _ => None,
+        };
+        let top_level_args = |s: &str| -> Vec<String> {
+            let (mut depth, mut cur, mut out) = (0i32, String::new(), Vec::new());
+            for ch in s.chars() {
+                match ch {
+                    '<' => depth += 1,
+                    '>' => depth -= 1,
+                    ',' if depth == 0 => { out.push(cur.trim().to_string()); cur.clear(); continue; }
+                    _ => {}
+                }
+                cur.push(ch);
+            }
+            out.push(cur.trim().to_string());
+            out
+        };
+        let chosen = match (base, inner) {
+            ("List" | "Set" | "Collection" | "Iterable" | "Optional" | "ObjectProvider" | "Provider", Some(i)) => {
+                top_level_args(i).into_iter().next()?
+            }
+            ("Map", Some(i)) => top_level_args(i).into_iter().last()?,
+            _ => type_text.to_string(),
+        };
+        let name = Self::simple_type_name(&chosen)?;
+        (!NON_BEAN_TYPES.contains(&name.as_str())).then_some(name)
     }
 
     fn child_of_kind<'t>(node: &Node<'t>, kind: &str) -> Option<Node<'t>> {
@@ -404,7 +482,7 @@ impl LanguageExtractor for JavaExtractor {
                 context,
                 context_type,
                 class_context,
-                decorators: Vec::new(),
+                decorators: Self::annotations(&node, source).into_iter().map(|(_, t)| t).collect(),
                 lang: self.lang_name().to_string(),
                 is_dependency: false,
                 source: None,
@@ -475,7 +553,7 @@ impl LanguageExtractor for JavaExtractor {
                 end_line: node.end_position().row + 1,
                 bases,
                 context,
-                decorators: Vec::new(),
+                decorators: Self::annotations(&node, source).into_iter().map(|(_, t)| t).collect(),
                 lang: self.lang_name().to_string(),
                 is_dependency: false,
                 source: None,
@@ -695,6 +773,83 @@ impl LanguageExtractor for JavaExtractor {
         }
 
         variables
+    }
+
+    fn find_injections(&self, root: &Node, source: &[u8]) -> Vec<InjectionData> {
+        let mut out = Vec::new();
+        for (class, cap) in self.execute_query("(class_declaration) @c", root, source) {
+            if cap != "c" {
+                continue;
+            }
+            let Some(name) = class.child_by_field_name("name") else { continue };
+            let injector = get_node_text(&name, source).to_string();
+            let anns = Self::annotations(&class, source);
+            let has = |n: &str| anns.iter().any(|(a, _)| a == n);
+            let stereotype = SPRING_STEREOTYPES.iter().find(|s| has(s)).map(|s| s.to_string());
+            let lombok_required = has("RequiredArgsConstructor");
+            let lombok_all = has("AllArgsConstructor");
+            let Some(body) = class.child_by_field_name("body") else { continue };
+            let members: Vec<Node> = (0..body.child_count()).filter_map(|i| body.child(i)).collect();
+            let mut push = |ty: &str, field: &Node, line: usize, kind: &str| {
+                if let Some(t) = Self::injected_type_name(ty) {
+                    out.push(InjectionData {
+                        injector_class: injector.clone(),
+                        injected_type: t,
+                        field_name: get_node_text(field, source).to_string(),
+                        line_number: line,
+                        kind: kind.to_string(),
+                        stereotype: stereotype.clone(),
+                    });
+                }
+            };
+
+            for m in members.iter().filter(|m| m.kind() == "field_declaration") {
+                let f_anns = Self::annotations(m, source);
+                let f_has = |n: &str| f_anns.iter().any(|(a, _)| a == n);
+                if f_has("Value") || Self::has_modifier(m, "static") {
+                    continue;
+                }
+                let kind = if INJECT_ANNOTATIONS.iter().any(|a| f_has(a)) {
+                    "field"
+                } else if stereotype.is_some()
+                    && ((lombok_required && Self::has_modifier(m, "final")) || lombok_all)
+                {
+                    "lombok"
+                } else {
+                    continue;
+                };
+                let Some(ty) = m.child_by_field_name("type") else { continue };
+                let ty = get_node_text(&ty, source);
+                for i in 0..m.child_count() {
+                    let Some(decl) = m.child(i).filter(|c| c.kind() == "variable_declarator") else { continue };
+                    if let Some(n) = decl.child_by_field_name("name") {
+                        push(ty, &n, m.start_position().row + 1, kind);
+                    }
+                }
+            }
+
+            // Constructor injection: the single constructor of a bean, or the
+            // one annotated @Autowired/@Inject.
+            if stereotype.is_some() {
+                let ctors: Vec<&Node> = members.iter().filter(|m| m.kind() == "constructor_declaration").collect();
+                let chosen = ctors.iter().find(|c| {
+                    Self::annotations(c, source).iter().any(|(a, _)| INJECT_ANNOTATIONS.contains(&a.as_str()))
+                });
+                let ctor = chosen.copied().or_else(|| (ctors.len() == 1).then(|| ctors[0]));
+                if let Some(params) = ctor.and_then(|c| c.child_by_field_name("parameters")) {
+                    for i in 0..params.child_count() {
+                        let Some(p) = params.child(i).filter(|c| c.kind() == "formal_parameter") else { continue };
+                        if Self::annotations(&p, source).iter().any(|(a, _)| a == "Value") {
+                            continue;
+                        }
+                        if let (Some(ty), Some(n)) = (p.child_by_field_name("type"), p.child_by_field_name("name")) {
+                            push(get_node_text(&ty, source), &n, p.start_position().row + 1, "constructor");
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn pre_scan_definitions(&self, root: &Node, source: &[u8]) -> Vec<String> {
@@ -948,5 +1103,59 @@ public class Main {
         assert_eq!(full("Box"), "Box<String>");
         assert_eq!(full("ArrayList"), "ArrayList<>");
         assert_eq!(full("Foo"), "a.b.Foo");
+    }
+
+    #[test]
+    fn test_spring_injections() {
+        let code = r#"
+@Service
+@RequiredArgsConstructor
+public class PetService {
+    private final PetRepository repo;
+    private final List<PetListener> listeners;
+    private final Map<String, Exporter> exporters;
+    private static final Logger log = null;
+    private final String region;
+    @Value("${x}") private final String apiKey;
+    private int counter;
+}
+
+@RestController
+public class PetController {
+    @Autowired private PetService petService;
+    private final AuditService audit;
+    public PetController(AuditService audit, @Value("${y}") String y) { this.audit = audit; }
+}
+
+public class NotABean {
+    private final Helper helper;
+}
+
+@Data
+public class PetDto { private final String name; }
+"#;
+        let (tree, source) = parse_source(code);
+        let inj = JavaExtractor.find_injections(&tree.root_node(), &source);
+        let got: Vec<(String, String, String, String)> = inj
+            .iter()
+            .map(|i| (i.injector_class.clone(), i.injected_type.clone(), i.field_name.clone(), i.kind.clone()))
+            .collect();
+        let want = |c: &str, t: &str, f: &str, k: &str| (c.to_string(), t.to_string(), f.to_string(), k.to_string());
+        assert_eq!(
+            got,
+            vec![
+                want("PetService", "PetRepository", "repo", "lombok"),
+                want("PetService", "PetListener", "listeners", "lombok"),
+                want("PetService", "Exporter", "exporters", "lombok"),
+                want("PetController", "PetService", "petService", "field"),
+                want("PetController", "AuditService", "audit", "constructor"),
+            ]
+        );
+        assert_eq!(inj[0].stereotype.as_deref(), Some("Service"));
+
+        let classes = JavaExtractor.find_classes(&tree.root_node(), &source, false);
+        assert_eq!(classes[0].decorators, vec!["@Service", "@RequiredArgsConstructor"]);
+        let functions = JavaExtractor.find_functions(&tree.root_node(), &source, false);
+        assert!(functions.iter().all(|f| f.decorators.is_empty()));
     }
 }
