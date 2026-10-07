@@ -132,6 +132,11 @@ pub trait LanguageExtractor: Send + Sync {
         Vec::new()
     }
 
+    /// ORM mappings (entities, query annotations, repositories). Java only.
+    fn find_orm_mappings(&self, _root: &Node, _source: &[u8]) -> Vec<OrmMappingData> {
+        Vec::new()
+    }
+
     fn pre_scan_definitions(&self, root: &Node, source: &[u8]) -> Vec<String> {
         let mut names = Vec::new();
         for f in self.find_functions(root, source, false) {

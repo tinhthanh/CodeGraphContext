@@ -136,6 +136,123 @@ const CALLABLE_KINDS: &[&str] = &[
     "lambda_expression",
 ];
 
+/// Words that can follow FROM/JOIN/INTO/UPDATE/TABLE without being a table.
+const SQL_NON_TABLES: &[&str] = &[
+    "SET", "SELECT", "LATERAL", "ONLY", "IF", "EXISTS", "NOT", "UNNEST", "VALUES", "DUAL", "NEW",
+    "AND", "OR", "ON", "AS", "WHERE", "FETCH", "LEFT", "INNER", "OUTER",
+];
+/// Functions whose arguments use FROM without naming a table.
+const SQL_FROM_FUNCTIONS: &[&str] = &["EXTRACT", "SUBSTRING", "TRIM", "POSITION", "OVERLAY", "DATE_PART"];
+
+/// Tables referenced by a SQL/JPQL string (after FROM / JOIN / INTO /
+/// UPDATE / TABLE). Native SQL names are lower-cased and may carry a
+/// `schema.` prefix; JPQL returns entity names as written.
+fn sql_tables(sql: &str, native: bool) -> Vec<String> {
+    // Tokenize: identifiers (with . and quotes), parentheses, skip strings/comments.
+    let mut tokens: Vec<String> = Vec::new();
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' {
+            i += 1;
+            while i < chars.len() && chars[i] != '\'' {
+                i += 1;
+            }
+            i += 1;
+        } else if c == '-' && chars.get(i + 1) == Some(&'-') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c.is_alphanumeric() || matches!(c, '_' | '"' | '`' | '$') {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || matches!(chars[i], '_' | '.' | '"' | '`' | '$')) {
+                i += 1;
+            }
+            tokens.push(chars[start..i].iter().collect());
+        } else {
+            if c == '(' || c == ')' {
+                tokens.push(c.to_string());
+            }
+            i += 1;
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    // Paren stack: does the paren belong to a FROM-using function?
+    let mut parens: Vec<bool> = Vec::new();
+    for (k, tok) in tokens.iter().enumerate() {
+        match tok.as_str() {
+            "(" => {
+                let prev = k.checked_sub(1).map(|p| tokens[p].to_uppercase()).unwrap_or_default();
+                parens.push(SQL_FROM_FUNCTIONS.contains(&prev.as_str()));
+                continue;
+            }
+            ")" => {
+                parens.pop();
+                continue;
+            }
+            _ => {}
+        }
+        let kw = tok.to_uppercase();
+        if !matches!(kw.as_str(), "FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE") || parens.iter().any(|f| *f) {
+            continue;
+        }
+        let Some(next) = tokens.get(k + 1) else { continue };
+        let name: String = next.chars().filter(|c| !matches!(c, '"' | '`')).collect();
+        if name.is_empty()
+            || name == "("
+            || SQL_NON_TABLES.contains(&name.to_uppercase().as_str())
+            || !name.starts_with(|c: char| c.is_alphabetic() || c == '_')
+        {
+            continue;
+        }
+        let name = if native { name.to_lowercase() } else { name };
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// READ or WRITE for a SQL/JPQL statement.
+fn sql_operation(sql: &str) -> &'static str {
+    let upper = sql.trim_start().to_uppercase();
+    let is_write = |s: &str| ["INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "REPLACE", "UPSERT"].iter().any(|w| s.starts_with(w));
+    if is_write(&upper) {
+        return "WRITE";
+    }
+    // WITH cte AS (...) INSERT/UPDATE/DELETE ...
+    if upper.starts_with("WITH") {
+        let mut depth = 0i32;
+        for (i, c) in upper.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ if depth == 0 && c.is_ascii_alphabetic() && is_write(&upper[i..])
+                    && (i == 0 || !upper.as_bytes()[i - 1].is_ascii_alphanumeric()) => return "WRITE",
+                _ => {}
+            }
+        }
+    }
+    "READ"
+}
+
+/// `PetHistory` → `pet_history` (Spring Boot's default physical naming).
+fn snake_case(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub struct JavaExtractor;
 
 impl JavaExtractor {
@@ -217,6 +334,62 @@ impl JavaExtractor {
                 Some((simple, get_node_text(&a, source).to_string()))
             })
             .collect()
+    }
+
+    /// The annotation node named `name` on a declaration.
+    fn annotation_node<'t>(node: &Node<'t>, name: &str, source: &[u8]) -> Option<Node<'t>> {
+        let mods = Self::child_of_kind(node, "modifiers")?;
+        (0..mods.child_count()).filter_map(|i| mods.child(i)).find(|a| {
+            matches!(a.kind(), "marker_annotation" | "annotation")
+                && a.child_by_field_name("name").map_or(false, |n| {
+                    let t = get_node_text(&n, source);
+                    t.rsplit('.').next().unwrap_or(t) == name
+                })
+        })
+    }
+
+    /// Value of an annotation element: the first `key = value` pair whose key
+    /// is in `keys`, or (if `positional`) a bare positional value.
+    fn annotation_value<'t>(ann: &Node<'t>, keys: &[&str], positional: bool, source: &[u8]) -> Option<Node<'t>> {
+        let args = ann.child_by_field_name("arguments")?;
+        let children: Vec<Node> = (0..args.named_child_count()).filter_map(|i| args.named_child(i)).collect();
+        for c in &children {
+            if c.kind() == "element_value_pair" {
+                let key = c.child_by_field_name("key").map(|k| get_node_text(&k, source)).unwrap_or("");
+                if keys.contains(&key) {
+                    return c.child_by_field_name("value");
+                }
+            }
+        }
+        if positional {
+            return children.into_iter().find(|c| c.kind() != "element_value_pair");
+        }
+        None
+    }
+
+    /// Concatenated contents of every string literal under `node` (handles
+    /// text blocks, `"a" + "b"` and `{"a", "b"}` arrays).
+    fn string_content(node: &Node, source: &[u8]) -> String {
+        let mut parts = Vec::new();
+        let mut stack = vec![*node];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "string_literal" {
+                let t = get_node_text(&n, source);
+                let inner = t
+                    .strip_prefix("\"\"\"")
+                    .and_then(|x| x.strip_suffix("\"\"\""))
+                    .or_else(|| t.strip_prefix('"').and_then(|x| x.strip_suffix('"')))
+                    .unwrap_or(t);
+                parts.push(inner.trim().to_string());
+                continue;
+            }
+            for i in (0..n.child_count()).rev() {
+                if let Some(c) = n.child(i) {
+                    stack.push(c);
+                }
+            }
+        }
+        parts.join(" ")
     }
 
     fn has_modifier(node: &Node, keyword: &str) -> bool {
@@ -859,6 +1032,121 @@ impl LanguageExtractor for JavaExtractor {
         variables
     }
 
+    fn find_orm_mappings(&self, root: &Node, source: &[u8]) -> Vec<OrmMappingData> {
+        let mut out = Vec::new();
+        let blank = |kind: &str, class: &str, line: usize| OrmMappingData {
+            kind: kind.to_string(),
+            class_name: class.to_string(),
+            method_name: None,
+            datastore: "jpa".to_string(),
+            tables: Vec::new(),
+            schema: None,
+            entity: None,
+            base: None,
+            operation: None,
+            native: false,
+            sql: None,
+            line_number: line,
+        };
+        let text_of = |ann: &Node, keys: &[&str], positional: bool| -> Option<String> {
+            Self::annotation_value(ann, keys, positional, source)
+                .map(|v| Self::string_content(&v, source))
+                .filter(|s| !s.is_empty())
+        };
+
+        // ── Type-level: entities and repositories ──
+        let types_q = "[(class_declaration) (record_declaration) (interface_declaration)] @t";
+        for (decl, cap) in self.execute_query(types_q, root, source) {
+            if cap != "t" {
+                continue;
+            }
+            let Some(name) = decl.child_by_field_name("name") else { continue };
+            let class = get_node_text(&name, source).to_string();
+            let line = decl.start_position().row + 1;
+            let ann = |n: &str| Self::annotation_node(&decl, n, source);
+
+            let mut entity = |store: &str, table: String, schema: Option<String>| {
+                let mut m = blank("entity", &class, line);
+                m.datastore = store.to_string();
+                m.tables = vec![table];
+                m.schema = schema;
+                out.push(m);
+            };
+            if ann("Entity").is_some() {
+                let table = ann("Table").as_ref().and_then(|t| text_of(t, &["name", "value"], true));
+                let schema = ann("Table").as_ref().and_then(|t| text_of(t, &["schema"], false));
+                entity("jpa", table.unwrap_or_else(|| snake_case(&class)), schema);
+            } else if let Some(t) = ann("Table") {
+                // Spring Data Cassandra / JDBC @Table without @Entity
+                let table = text_of(&t, &["name", "value"], true).unwrap_or_else(|| snake_case(&class));
+                entity("cassandra", table, text_of(&t, &["keyspace", "schema"], false));
+            }
+            if let Some(d) = ann("Document") {
+                let coll = text_of(&d, &["collection", "value"], true).unwrap_or_else(|| {
+                    let mut c = class.clone();
+                    c[..1].make_ascii_lowercase();
+                    c
+                });
+                entity("mongo", coll, None);
+            }
+            if let Some(r) = ann("RedisHash") {
+                entity("redis", text_of(&r, &["value"], true).unwrap_or_else(|| class.clone()), None);
+            }
+
+            // Repository candidates: interface X extends Base<Entity, ...>
+            if decl.kind() == "interface_declaration" {
+                if let Some(ext) = Self::child_of_kind(&decl, "extends_interfaces") {
+                    let holder = Self::child_of_kind(&ext, "type_list").unwrap_or(ext);
+                    for i in 0..holder.child_count() {
+                        let Some(g) = holder.child(i).filter(|c| c.kind() == "generic_type") else { continue };
+                        let base = g.child(0).map(|b| get_node_text(&b, source).rsplit('.').next().unwrap_or("").to_string());
+                        let first_arg = Self::child_of_kind(&g, "type_arguments")
+                            .and_then(|a| a.named_child(0))
+                            .and_then(|a| Self::simple_type_name(get_node_text(&a, source)));
+                        if let (Some(base), Some(ent)) = (base, first_arg) {
+                            let mut m = blank("repository", &class, line);
+                            m.base = Some(base);
+                            m.entity = Some(ent);
+                            out.push(m);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Method-level: query annotations ──
+        for (method, cap) in self.execute_query("(method_declaration) @m", root, source) {
+            if cap != "m" {
+                continue;
+            }
+            let ann = |n: &str| Self::annotation_node(&method, n, source);
+            let (query, native, store) = if let Some(q) = ann("Query") {
+                let native = Self::annotation_value(&q, &["nativeQuery"], false, source)
+                    .map_or(false, |v| get_node_text(&v, source) == "true");
+                (q, native, "jpa")
+            } else if let Some(q) = ann("NativeQuery") {
+                (q, true, "jpa")
+            } else if let Some(q) = ["Select", "Insert", "Update", "Delete"].iter().find_map(|n| ann(n)) {
+                (q, true, "mybatis")
+            } else {
+                continue;
+            };
+            let Some(sql) = text_of(&query, &["value"], true) else { continue };
+            let class = self.get_class_context(&method, source).0.unwrap_or_default();
+            let mut m = blank("query", &class, method.start_position().row + 1);
+            m.method_name = method.child_by_field_name("name").map(|n| get_node_text(&n, source).to_string());
+            m.datastore = store.to_string();
+            m.native = native;
+            m.tables = sql_tables(&sql, native);
+            m.operation = Some(
+                if ann("Modifying").is_some() { "WRITE" } else { sql_operation(&sql) }.to_string(),
+            );
+            m.sql = Some(sql.chars().take(500).collect());
+            out.push(m);
+        }
+        out
+    }
+
     fn find_injections(&self, root: &Node, source: &[u8]) -> Vec<InjectionData> {
         let mut out = Vec::new();
         for (class, cap) in self.execute_query("(class_declaration) @c", root, source) {
@@ -1274,5 +1562,69 @@ public class Svc {
         let vars = ext.find_variables(&tree.root_node(), &source);
         let owner = vars.iter().find(|v| v.name == "owner").unwrap();
         assert_eq!((owner.type_annotation.as_deref(), owner.context.as_deref()), (Some("Customer"), Some("PetDto")));
+    }
+
+    #[test]
+    fn test_sql_tables_and_operation() {
+        assert_eq!(sql_tables("SELECT s.* FROM shared.send_sms_history s JOIN tenant.users u ON u.id = s.uid", true),
+                   vec!["shared.send_sms_history", "tenant.users"]);
+        assert_eq!(sql_tables("SELECT s FROM Setting s WHERE s.tenantId = :t", false), vec!["Setting"]);
+        assert_eq!(sql_tables("SELECT EXTRACT(YEAR FROM created_at) FROM bills b WHERE b.x IN (SELECT id FROM items)", true),
+                   vec!["bills", "items"]);
+        assert_eq!(sql_tables("INSERT INTO a (x) VALUES (1) ON CONFLICT (x) DO UPDATE SET x = 2", true), vec!["a"]);
+        assert_eq!(sql_operation("  update pets set x = 1"), "WRITE");
+        assert_eq!(sql_operation("WITH c AS (SELECT 1) DELETE FROM pets WHERE id IN (SELECT * FROM c)"), "WRITE");
+        assert_eq!(sql_operation("SELECT * FROM pets"), "READ");
+        assert_eq!(snake_case("PetHistory"), "pet_history");
+        assert_eq!(sql_tables("SELECT e FROM Pet e JOIN FETCH e.owner o JOIN o.a a ON a.x = 1 AND a.y = 2", false),
+                   vec!["Pet", "o.a"]);
+        assert_eq!(sql_tables("SELECT e FROM #{#entityName} e", false), vec!["entityName"]);
+    }
+
+    #[test]
+    fn test_orm_mappings() {
+        let code = r#"
+@Entity
+@Table(name = "users", schema = "tenant")
+public class User {}
+
+@Entity
+public class PetHistory {}
+
+public interface UserRepository extends TenantAwareRepository<User>, Searchable {
+    @Query(value = """
+        SELECT * FROM tenant.users
+        WHERE tenant_id = :t
+        """, nativeQuery = true)
+    List<User> active(String t);
+
+    @Modifying
+    @Query("UPDATE User u SET u.deleted = true " + "WHERE u.id = :id")
+    void softDelete(String id);
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let m = JavaExtractor.find_orm_mappings(&tree.root_node(), &source);
+        let ent: Vec<(String, Vec<String>, Option<String>)> = m
+            .iter()
+            .filter(|x| x.kind == "entity")
+            .map(|x| (x.class_name.clone(), x.tables.clone(), x.schema.clone()))
+            .collect();
+        assert_eq!(ent, vec![
+            ("User".into(), vec!["users".into()], Some("tenant".into())),
+            ("PetHistory".into(), vec!["pet_history".into()], None),
+        ]);
+        let repo = m.iter().find(|x| x.kind == "repository").unwrap();
+        assert_eq!((repo.class_name.as_str(), repo.base.as_deref(), repo.entity.as_deref()),
+                   ("UserRepository", Some("TenantAwareRepository"), Some("User")));
+        let q: Vec<(Option<String>, Vec<String>, Option<String>, bool)> = m
+            .iter()
+            .filter(|x| x.kind == "query")
+            .map(|x| (x.method_name.clone(), x.tables.clone(), x.operation.clone(), x.native))
+            .collect();
+        assert_eq!(q, vec![
+            (Some("active".into()), vec!["tenant.users".into()], Some("READ".into()), true),
+            (Some("softDelete".into()), vec!["User".into()], Some("WRITE".into()), false),
+        ]);
     }
 }

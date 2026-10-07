@@ -11,6 +11,9 @@ pub struct FileData {
     pub function_calls: Vec<CallData>,
     /// Dependency-injection points (Spring beans injected into a class).
     pub injections: Vec<InjectionData>,
+    /// ORM / datastore facts: entity→table mappings, query annotations,
+    /// repository→entity bindings.
+    pub orm_mappings: Vec<OrmMappingData>,
     pub is_dependency: bool,
     pub lang: String,
 }
@@ -121,4 +124,29 @@ pub struct InjectionData {
     pub kind: String,
     /// Spring stereotype of the injector (Service, RestController, ...), if any
     pub stereotype: Option<String>,
+}
+
+/// One ORM / datastore fact extracted from annotations.
+#[derive(Debug, Clone)]
+pub struct OrmMappingData {
+    /// "entity" (class mapped to a table), "query" (SQL/JPQL on a method)
+    /// or "repository" (interface whose generic base names its entity)
+    pub kind: String,
+    pub class_name: String,
+    pub method_name: Option<String>,
+    /// jpa | cassandra | mongo | redis | mybatis
+    pub datastore: String,
+    /// entity: [table]; query: tables (native SQL) or entity names (JPQL)
+    pub tables: Vec<String>,
+    /// entity: table schema, if declared
+    pub schema: Option<String>,
+    /// repository: entity class; also the base interface in `base`
+    pub entity: Option<String>,
+    pub base: Option<String>,
+    /// query: READ or WRITE
+    pub operation: Option<String>,
+    /// query: true for native SQL, false for JPQL
+    pub native: bool,
+    pub sql: Option<String>,
+    pub line_number: usize,
 }

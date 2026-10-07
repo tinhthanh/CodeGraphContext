@@ -475,6 +475,8 @@ fn resolved_call_to_py(py: Python<'_>, r: &ResolvedCall) -> PyResult<PyObject> {
     d.set_item("full_call_name", &r.full_call_name)?;
     d.set_item("resolution_tier", r.tier)?;
     d.set_item("confidence", r.confidence)?;
+    d.set_item("called_class", &r.called_class)?;
+    d.set_item("receiver_type", &r.dispatch_class)?;
     Ok(d.into_any().unbind())
 }
 

@@ -57,6 +57,7 @@ pub fn parse_file(
     let function_calls = extractor.find_calls(&root, &source);
     let variables = extractor.find_variables(&root, &source);
     let injections = extractor.find_injections(&root, &source);
+    let orm_mappings = extractor.find_orm_mappings(&root, &source);
 
     ParseResult::Ok(FileData {
         path: path.to_string(),
@@ -66,6 +67,7 @@ pub fn parse_file(
         imports,
         function_calls,
         injections,
+        orm_mappings,
         is_dependency,
         lang: lang.to_string(),
     })
