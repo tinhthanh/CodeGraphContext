@@ -56,6 +56,10 @@ const QUERY_VARIABLES: &str = r#"
     ) @variable
 "#;
 
+const QUERY_CLASS_PARAMS: &str = r#"
+    (class_parameter) @param
+"#;
+
 const QUERY_PRE_SCAN: &str = r#"
     (class_declaration name: (identifier) @name)
     (object_declaration name: (identifier) @name)
@@ -673,6 +677,41 @@ impl LanguageExtractor for KotlinExtractor {
             });
         }
 
+        // Constructor properties: `class Svc(private val repo: Repo)`.
+        for (node, _) in self.execute_query(QUERY_CLASS_PARAMS, root, source) {
+            let children: Vec<Node> =
+                (0..node.child_count()).filter_map(|i| node.child(i)).collect();
+            if !children.iter().any(|c| c.kind() == "val" || c.kind() == "var") {
+                continue; // plain constructor parameter, not a property
+            }
+            let Some(name_node) = children.iter().find(|c| c.kind() == "identifier") else {
+                continue;
+            };
+            let type_annotation = children
+                .iter()
+                .find(|c| matches!(c.kind(), "user_type" | "nullable_type" | "function_type"))
+                .map(|t| get_node_text(t, source).to_string());
+            let value = children
+                .iter()
+                .position(|c| c.kind() == "=")
+                .and_then(|i| children.get(i + 1))
+                .map(|v| get_node_text(v, source).to_string());
+
+            let (context, _, _) = self.get_parent_context_kotlin(&node, source);
+            let class_context = self.get_class_context_kotlin(&node, source);
+
+            variables.push(VariableData {
+                name: get_node_text(name_node, source).to_string(),
+                line_number: name_node.start_position().row + 1,
+                value,
+                type_annotation,
+                context,
+                class_context,
+                lang: self.lang_name().to_string(),
+                is_dependency: false,
+            });
+        }
+
         variables
     }
 
@@ -859,5 +898,22 @@ class Model {
         }
         let classes = ext.find_classes(&tree.root_node(), &source, false);
         assert_eq!(classes.iter().find(|c| c.name == "Model").unwrap().line_number, 8);
+    }
+
+    #[test]
+    fn test_constructor_properties_are_variables() {
+        let code = r#"
+class Svc(private val repo: Repo, var limit: Int = 10, plain: String) {
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let vars = KotlinExtractor.find_variables(&tree.root_node(), &source);
+        let repo = vars.iter().find(|v| v.name == "repo").unwrap();
+        assert_eq!(repo.type_annotation.as_deref(), Some("Repo"));
+        assert_eq!(repo.class_context.as_deref(), Some("Svc"));
+        let limit = vars.iter().find(|v| v.name == "limit").unwrap();
+        assert_eq!(limit.type_annotation.as_deref(), Some("Int"));
+        assert_eq!(limit.value.as_deref(), Some("10"));
+        assert!(!vars.iter().any(|v| v.name == "plain"));
     }
 }
