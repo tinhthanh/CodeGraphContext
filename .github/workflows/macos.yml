@@ -25,7 +25,7 @@ jobs:
 
       - name: Install CodeGraphContext
         run: |
-          pip install -e .
+          pip install -e ".[full]"
 
       - name: Debug info
         run: |

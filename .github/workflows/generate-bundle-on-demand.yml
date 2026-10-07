@@ -37,7 +37,7 @@ jobs:
       
       - name: Install CodeGraphContext
         run: |
-          uv pip install --system -e .
+          uv pip install --system -e ".[full]"
           uv pip install --system tree-sitter tree-sitter-language-pack
       
       - name: Parse repository URL

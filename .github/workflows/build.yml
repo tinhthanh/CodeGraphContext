@@ -40,7 +40,7 @@ jobs:
         if: runner.os != 'Linux'
         run: |
           python -m pip install --upgrade pip setuptools wheel build
-          pip install .
+          pip install ".[full]"
           pip install pyinstaller
 
       - name: Build with PyInstaller (Windows/Mac)
@@ -53,7 +53,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python -m pip install --upgrade pip setuptools wheel build
-          pip install .
+          pip install ".[full]"
           pip install pyinstaller
 
       - name: Build with PyInstaller (Linux)
