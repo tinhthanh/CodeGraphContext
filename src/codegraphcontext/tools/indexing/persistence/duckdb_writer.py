@@ -100,7 +100,8 @@ class DuckDBGraphWriter:
             caller_name VARCHAR DEFAULT '', called_name VARCHAR DEFAULT '',
             caller_path VARCHAR DEFAULT '', called_path VARCHAR DEFAULT '',
             line_number INTEGER DEFAULT 0, full_call_name VARCHAR DEFAULT '',
-            confidence VARCHAR DEFAULT 'EXTRACTED')""")
+            confidence VARCHAR DEFAULT 'EXTRACTED',
+            resolution_tier INTEGER DEFAULT 0)""")
         c.execute("""CREATE TABLE IF NOT EXISTS inheritance (
             child_uid VARCHAR, parent_uid VARCHAR,
             child_name VARCHAR DEFAULT '', parent_name VARCHAR DEFAULT '',
@@ -264,7 +265,7 @@ class DuckDBGraphWriter:
         # ── CALLS edges ──────────────────────────────────────────────
         c_caller = []; c_called = []; c_ct = []; c_cdt = []
         c_cn = []; c_dn = []; c_cp = []; c_dp = []
-        c_ln = []; c_fcn = []; c_conf = []
+        c_ln = []; c_fcn = []; c_conf = []; c_tier = []
         edge_labels = [
             ("Function", "Function"), ("Function", "Class"),
             ("Class", "Function"), ("Class", "Class"),
@@ -292,8 +293,13 @@ class DuckDBGraphWriter:
                     pass
                 c_cp.append(caller_path); c_dp.append(called_path)
                 c_ln.append(e.get("line_number", 0)); c_fcn.append(e.get("full_call_name", ""))
-                # Confidence: EXTRACTED if same file, INFERRED if cross-file
-                c_conf.append("EXTRACTED" if caller_path == called_path else "INFERRED")
+                # Confidence comes from the resolver's tier (upstream scheme):
+                # EXTRACTED / INFERRED / AMBIGUOUS. Older resolvers without a
+                # tier fall back to the same-file heuristic.
+                tier = e.get("resolution_tier", 0)
+                c_tier.append(tier)
+                c_conf.append(e.get("confidence") or (
+                    "EXTRACTED" if caller_path == called_path else "INFERRED"))
 
         # ── Inheritance ──────────────────────────────────────────────
         inh_child = []; inh_parent = []; inh_cn = []; inh_pn = []; inh_cp = []; inh_pp = []
@@ -373,6 +379,7 @@ class DuckDBGraphWriter:
             "caller_path": c_cp, "called_path": c_dp,
             "line_number": c_ln, "full_call_name": c_fcn,
             "confidence": c_conf,
+            "resolution_tier": pa.array(c_tier, type=pa.int32()),
         }), f"{pq_dir}/calls.parquet")
 
         if inh_child:

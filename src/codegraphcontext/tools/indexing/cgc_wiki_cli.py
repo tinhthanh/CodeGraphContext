@@ -646,7 +646,7 @@ If the context has "Operational Parameters", include ALL as:
 - Every sentence must contain a concrete fact (function name, file path, config value, or data flow).
 - BANNED words: "natively", "securely", "dynamically", "accurately", "cleanly", "perfectly", "effectively", "flawlessly", "structurally", "robustly", "orchestrates", "facilitates", "leverages"
 - DO NOT write filler. If you don't know something, skip it. Short + correct > long + vague.
-- Use confidence tags: EXTRACTED = certain (AST), INFERRED = cross-file resolution.
+- Use confidence tags: EXTRACTED = certain (same file, explicit import or enclosing class), INFERRED = resolved via the receiver's type or inheritance. AMBIGUOUS edges are omitted.
 - When mentioning another module, use: [[module-slug]]
 - Language: Write in English by default. If the user requested another language, translate headings and explanatory text but NEVER translate function names, file paths, config values, class names, HTTP paths. NEVER invent technical jargon.
 ```
