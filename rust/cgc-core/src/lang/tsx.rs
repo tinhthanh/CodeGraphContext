@@ -80,14 +80,12 @@ const QUERY_CLASSES: &str = r#"
     (class) @class
 "#;
 
-#[allow(dead_code)]
 const QUERY_INTERFACES: &str = r#"
     (interface_declaration
         name: (type_identifier) @name
     ) @interface_node
 "#;
 
-#[allow(dead_code)]
 const QUERY_TYPE_ALIASES: &str = r#"
     (type_alias_declaration
         name: (type_identifier) @name
@@ -569,6 +567,89 @@ impl LanguageExtractor for TsxExtractor {
             classes.push(class);
         }
 
+        // Interfaces stored as classes with "[interface]" prefix in name
+        for (node, capture_name) in self.execute_query(QUERY_INTERFACES, root, source) {
+            if capture_name != "interface_node" {
+                continue;
+            }
+
+            let name_node = match node.child_by_field_name("name") {
+                Some(n) => n,
+                None => continue,
+            };
+            let name = format!("[interface] {}", get_node_text(&name_node, source));
+
+            // Interfaces can extend other interfaces
+            let mut bases = Vec::new();
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "extends_type_clause" || child.kind() == "extends_clause" {
+                        for j in 0..child.child_count() {
+                            if let Some(sub) = child.child(j) {
+                                if matches!(
+                                    sub.kind(),
+                                    "identifier" | "type_identifier" | "member_expression"
+                                ) {
+                                    bases.push(get_node_text(&sub, source).to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut class = ClassData {
+                name,
+                line_number: node.start_position().row + 1,
+                end_line: node.end_position().row + 1,
+                bases,
+                context: None,
+                decorators: Vec::new(),
+                lang: self.lang_name().to_string(),
+                is_dependency: false,
+                source: None,
+                docstring: None,
+            };
+
+            if index_source {
+                class.source = Some(get_node_text(&node, source).to_string());
+            }
+
+            classes.push(class);
+        }
+
+        // Type aliases stored as classes with "[type]" prefix in name
+        for (node, capture_name) in self.execute_query(QUERY_TYPE_ALIASES, root, source) {
+            if capture_name != "type_alias_node" {
+                continue;
+            }
+
+            let name_node = match node.child_by_field_name("name") {
+                Some(n) => n,
+                None => continue,
+            };
+            let name = format!("[type] {}", get_node_text(&name_node, source));
+
+            let mut class = ClassData {
+                name,
+                line_number: node.start_position().row + 1,
+                end_line: node.end_position().row + 1,
+                bases: Vec::new(),
+                context: None,
+                decorators: Vec::new(),
+                lang: self.lang_name().to_string(),
+                is_dependency: false,
+                source: None,
+                docstring: None,
+            };
+
+            if index_source {
+                class.source = Some(get_node_text(&node, source).to_string());
+            }
+
+            classes.push(class);
+        }
+
         classes
     }
 
@@ -844,5 +925,26 @@ let name = "hello";
         let vars = ext.find_variables(&tree.root_node(), &source);
         assert!(vars.len() >= 2);
         assert_eq!(vars[0].name, "x");
+    }
+
+    #[test]
+    fn test_find_interfaces_and_type_aliases() {
+        let code = r#"
+interface Props extends BaseProps {
+    label: string;
+}
+
+type ID = string | number;
+
+export const Button = ({ label }: Props) => <button>{label}</button>;
+"#;
+        let (tree, source) = parse_source(code);
+        let classes = TsxExtractor.find_classes(&tree.root_node(), &source, false);
+        let props = classes
+            .iter()
+            .find(|c| c.name == "[interface] Props")
+            .expect("interface emitted");
+        assert_eq!(props.bases, vec!["BaseProps".to_string()]);
+        assert!(classes.iter().any(|c| c.name == "[type] ID"));
     }
 }
