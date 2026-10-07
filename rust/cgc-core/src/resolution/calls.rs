@@ -351,6 +351,22 @@ pub struct CallGroups {
     pub cls_to_cls: Vec<ResolvedCall>,
     pub file_to_fn: Vec<ResolvedCall>,
     pub file_to_cls: Vec<ResolvedCall>,
+    /// Calls that produced no edge, with the reason (Python builtins excluded).
+    pub unresolved: Vec<UnresolvedCall>,
+}
+
+/// A call the resolver dropped, kept for diagnostics (upstream: `record_skip`).
+#[derive(Debug, Clone)]
+pub struct UnresolvedCall {
+    pub caller_file_path: String,
+    pub caller_name: Option<String>,
+    pub line_number: usize,
+    pub called_name: String,
+    pub full_call_name: String,
+    /// Receiver type the extractor inferred, if any
+    pub receiver_type: Option<String>,
+    /// external_receiver_type | external_chain_type | receiver_namesake | skip_external
+    pub reason: &'static str,
 }
 
 /// Locate the file declaring type `ty`. Returns (file, exact): exact when
@@ -375,8 +391,9 @@ fn locate_type(
     Some((paths[0].clone(), false))
 }
 
-/// Resolve a single function call to its target.
-pub fn resolve_function_call(
+/// Resolve a single function call to its target; `Err(reason)` when the
+/// call produces no edge.
+pub fn resolve_call(
     call: &CallInput,
     caller_file_path: &str,
     local_names: &HashSet<String>,
@@ -384,7 +401,7 @@ pub fn resolve_function_call(
     imports_map: &HashMap<String, Vec<String>>,
     types: &TypeIndex,
     skip_external: bool,
-) -> Option<ResolvedCall> {
+) -> Result<ResolvedCall, &'static str> {
     let called_name = &call.name;
     let full_call = &call.full_name;
 
@@ -393,7 +410,7 @@ pub fn resolve_function_call(
     // from another language — is a regular method call.
     let is_python = caller_file_path.ends_with(".py") || caller_file_path.ends_with(".pyi");
     if is_python && !full_call.contains('.') && PYTHON_BUILTINS.contains(&called_name.as_str()) {
-        return None;
+        return Err("python_builtin");
     }
 
     let base_obj = if full_call.contains('.') {
@@ -514,7 +531,7 @@ pub fn resolve_function_call(
                     resolved = Some((found.map(|(_, f, _)| f).unwrap_or(file), 4));
                 }
                 // e.g. repo.findAll().stream(): target is outside the graph
-                ChainType::External => return None,
+                ChainType::External => return Err("external_chain_type"),
                 ChainType::Unknown => {}
             }
         }
@@ -581,7 +598,7 @@ pub fn resolve_function_call(
             // The receiver's type is known but lives outside the repo: the
             // target can't be in the graph (upstream: receiver_resolution_failed).
             if external_receiver_type {
-                return None;
+                return Err("external_receiver_type");
             }
             // Pointing it at the caller's file would bind it to a same-named
             // local function (false recursion), so drop it in that case —
@@ -589,7 +606,7 @@ pub fn resolve_function_call(
             if local_names.contains(called_name.as_str())
                 || call.context_name.as_deref() == Some(called_name.as_str())
             {
-                return None;
+                return Err("receiver_namesake");
             }
             resolved = Some((own(), 9));
         } else if !qualified_other && local_names.contains(called_name.as_str()) {
@@ -606,7 +623,7 @@ pub fn resolve_function_call(
                 })
                 .collect();
             if candidates.is_empty() && qualified_other && local_names.contains(called_name.as_str()) {
-                return None;
+                return Err("receiver_namesake");
             }
             // Try matching via local imports
             for p in &candidates {
@@ -628,7 +645,7 @@ pub fn resolve_function_call(
     }
 
     if skip_external && is_unresolved_external {
-        return None;
+        return Err("skip_external");
     }
 
     let (resolved_path, tier) = resolved.unwrap_or_else(|| (own(), 9));
@@ -638,7 +655,7 @@ pub fn resolve_function_call(
     if let (Some(name), Some(_), Some(line)) =
         (&call.context_name, &call.context_type, call.context_line)
     {
-        Some(ResolvedCall {
+        Ok(ResolvedCall {
             call_type: "function".to_string(),
             caller_name: Some(name.clone()),
             caller_file_path: caller_file_path.to_string(),
@@ -654,7 +671,7 @@ pub fn resolve_function_call(
             dispatch_class: dispatch_class.clone(),
         })
     } else {
-        Some(ResolvedCall {
+        Ok(ResolvedCall {
             call_type: "file".to_string(),
             caller_name: None,
             caller_file_path: caller_file_path.to_string(),
@@ -670,6 +687,19 @@ pub fn resolve_function_call(
             dispatch_class: dispatch_class.clone(),
         })
     }
+}
+
+/// Resolve a single function call to its target (None when dropped).
+pub fn resolve_function_call(
+    call: &CallInput,
+    caller_file_path: &str,
+    local_names: &HashSet<String>,
+    local_imports: &HashMap<String, String>,
+    imports_map: &HashMap<String, Vec<String>>,
+    types: &TypeIndex,
+    skip_external: bool,
+) -> Option<ResolvedCall> {
+    resolve_call(call, caller_file_path, local_names, local_imports, imports_map, types, skip_external).ok()
 }
 
 /// Language extension map for filtering imports_map by language.
@@ -763,7 +793,7 @@ pub fn build_function_call_groups(
         };
 
         for call in &file_data.calls {
-            let first = match resolve_function_call(
+            let first = match resolve_call(
                 call,
                 caller_file_path,
                 &local_names_owned,
@@ -772,8 +802,20 @@ pub fn build_function_call_groups(
                 &types,
                 skip_external,
             ) {
-                Some(r) => r,
-                None => continue,
+                Ok(r) => r,
+                Err("python_builtin") => continue,
+                Err(reason) => {
+                    groups.unresolved.push(UnresolvedCall {
+                        caller_file_path: caller_file_path.to_string(),
+                        caller_name: call.context_name.clone(),
+                        line_number: call.line_number,
+                        called_name: call.name.clone(),
+                        full_call_name: call.full_name.clone(),
+                        receiver_type: call.inferred_obj_type.clone(),
+                        reason,
+                    });
+                    continue;
+                }
             };
 
             // Virtual dispatch (upstream: Java interface fan-out): a call
@@ -1312,5 +1354,19 @@ mod tests {
         call.context_name = Some("error".to_string());
         let r = resolve_function_call(&call, "/r/Log.ts", &HashSet::new(), &HashMap::new(), &HashMap::new(), &TypeIndex::default(), false);
         assert!(r.is_none());
+    }
+
+    #[test]
+    fn test_unresolved_calls_are_recorded_with_reason() {
+        let mut f = file("/r/A.java", &[("A", &["run", "add"], &[])], vec![]);
+        let mut ext = receiver_call("add", "items.add", Some("List"));
+        ext.context_name = Some("run".into());
+        let mut builtin = receiver_call("len", "len", None);
+        builtin.context_name = Some("run".into());
+        f.calls = vec![ext, builtin];
+        let groups = build_function_call_groups(&[f], &HashMap::new(), &HashMap::new(), false);
+        assert_eq!(groups.unresolved.len(), 1); // the builtin isn't recorded (and A.java isn't Python anyway)
+        let u = &groups.unresolved[0];
+        assert_eq!((u.called_name.as_str(), u.reason, u.receiver_type.as_deref()), ("add", "external_receiver_type", Some("List")));
     }
 }

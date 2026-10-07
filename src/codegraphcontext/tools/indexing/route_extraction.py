@@ -649,4 +649,11 @@ def extract_routes(
     # Sort by path
     routes.sort(key=lambda r: (r["path"], r["method"]))
     logger.info("Detected %d API routes", len(routes))
+
+    # Angular Router (route tables + lazy-loaded modules), full paths
+    try:
+        from .angular_routes import extract_angular_routes
+        routes.extend(extract_angular_routes(parsed_results, repo_path))
+    except Exception as exc:  # never let one framework break route extraction
+        logger.debug("Angular route extraction failed: %s", exc)
     return routes

@@ -88,12 +88,13 @@ fn parse_and_prescan(
 
 /// Convert Python all_file_data + imports_map into Rust types, run resolution, return results.
 #[pyfunction]
-#[pyo3(signature = (all_file_data, imports_map, skip_external=false))]
+#[pyo3(signature = (all_file_data, imports_map, skip_external=false, with_unresolved=false))]
 fn resolve_call_groups(
     py: Python<'_>,
     all_file_data: &Bound<'_, PyList>,
     imports_map: &Bound<'_, PyDict>,
     skip_external: bool,
+    with_unresolved: bool,
 ) -> PyResult<PyObject> {
     // Convert imports_map: Python dict -> Rust HashMap
     let rust_imports_map = py_dict_to_imports_map(imports_map)?;
@@ -120,8 +121,25 @@ fn resolve_call_groups(
         build_function_call_groups(&rust_files, &rust_imports_map, &file_class_lookup, skip_external)
     });
 
-    // Convert back to Python: 6-tuple of lists of dicts
-    call_groups_to_py(py, &groups)
+    // Convert back to Python: 6-tuple of lists of dicts; with_unresolved
+    // returns (6-tuple, [unresolved call dicts]) instead.
+    let call_groups = call_groups_to_py(py, &groups)?;
+    if !with_unresolved {
+        return Ok(call_groups);
+    }
+    let unresolved = PyList::empty(py);
+    for u in &groups.unresolved {
+        let d = PyDict::new(py);
+        d.set_item("caller_file_path", &u.caller_file_path)?;
+        d.set_item("caller_name", &u.caller_name)?;
+        d.set_item("line_number", u.line_number)?;
+        d.set_item("called_name", &u.called_name)?;
+        d.set_item("full_call_name", &u.full_call_name)?;
+        d.set_item("receiver_type", &u.receiver_type)?;
+        d.set_item("reason", u.reason)?;
+        unresolved.append(d)?;
+    }
+    Ok(PyTuple::new(py, [call_groups, unresolved.into_any().unbind()])?.into_any().unbind())
 }
 
 /// Resolve inheritance links.
