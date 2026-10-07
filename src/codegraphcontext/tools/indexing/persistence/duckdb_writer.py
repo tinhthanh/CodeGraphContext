@@ -145,6 +145,18 @@ class DuckDBGraphWriter:
             method VARCHAR, path VARCHAR, handler VARCHAR,
             file VARCHAR, line INTEGER DEFAULT 0,
             framework VARCHAR DEFAULT '')""")
+        # Calls the resolver dropped, with the reason (diagnostics)
+        c.execute("""CREATE TABLE IF NOT EXISTS unresolved_calls (
+            caller_name VARCHAR DEFAULT '', caller_path VARCHAR,
+            line_number INTEGER DEFAULT 0, called_name VARCHAR,
+            full_call_name VARCHAR DEFAULT '', receiver_type VARCHAR DEFAULT '',
+            reason VARCHAR)""")
+        # Frontend navigations: router.navigate(...) -> matched route
+        c.execute("""CREATE TABLE IF NOT EXISTS navigations (
+            caller_name VARCHAR DEFAULT '', caller_path VARCHAR,
+            line_number INTEGER DEFAULT 0, target VARCHAR,
+            route_path VARCHAR DEFAULT '', route_handler VARCHAR DEFAULT '',
+            route_file VARCHAR DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS operational_params (
             name VARCHAR, value VARCHAR, path VARCHAR,
             line_number INTEGER DEFAULT 0, category VARCHAR DEFAULT '')""")
@@ -159,6 +171,7 @@ class DuckDBGraphWriter:
         call_groups: Tuple,
         inheritance: List[Dict] = None,
         on_progress: Optional[Callable] = None,
+        unresolved: Optional[List[Dict]] = None,
     ) -> Dict[str, int]:
         """Write entire graph via Parquet bulk load.
 
@@ -447,7 +460,7 @@ class DuckDBGraphWriter:
         c = self._conn
 
         # Drop existing data
-        for tbl in ["operational_params", "rationales", "routes", "execution_flows", "calls", "inheritance", "injections", "orm_entities", "orm_repositories", "db_access", "file_contains",
+        for tbl in ["operational_params", "rationales", "routes", "execution_flows", "calls", "inheritance", "injections", "orm_entities", "orm_repositories", "db_access", "navigations", "unresolved_calls", "file_contains",
                      "imports", "parameters", "variables", "classes", "functions",
                      "directories", "files", "modules", "repository"]:
             c.execute(f"DROP TABLE IF EXISTS {tbl}")
@@ -473,7 +486,7 @@ class DuckDBGraphWriter:
 
         # Modules (deduplicated)
         if mod_set:
-            c.executemany("INSERT INTO modules VALUES (?)", [(m,) for m in mod_set])
+            _insert_rows(c, "modules", [(m,) for m in mod_set])
 
         c.execute(f"INSERT INTO imports SELECT * FROM read_parquet('{pq_dir}/imports.parquet')")
         c.execute(f"INSERT INTO file_contains SELECT * FROM read_parquet('{pq_dir}/file_contains.parquet')")
@@ -483,13 +496,32 @@ class DuckDBGraphWriter:
             c.execute(f"INSERT INTO inheritance SELECT * FROM read_parquet('{pq_dir}/inheritance.parquet')")
 
         if inj_rows:
-            c.executemany(
-                "INSERT INTO injections VALUES (?,?,?,?,?,?,?,?)",
-                _resolve_injection_targets(inj_rows, cl_name, cl_path),
+            _insert_rows(c, "injections", _resolve_injection_targets(inj_rows, cl_name, cl_path),
             )
 
         if orm_rows:
             _write_orm(c, orm_rows)
+
+        if unresolved:
+            def _rel_path(p):
+                try:
+                    return str(Path(p).relative_to(repo_path_obj)) if p else ""
+                except ValueError:
+                    return p
+            # Bulk load via Arrow: executemany is ~1 row per call in DuckDB
+            # and tens of thousands of rows are normal here.
+            unresolved_tbl = pa.table({
+                "caller_name": [u.get("caller_name") or "" for u in unresolved],
+                "caller_path": [_rel_path(u.get("caller_file_path", "")) for u in unresolved],
+                "line_number": pa.array([u.get("line_number", 0) for u in unresolved], type=pa.int32()),
+                "called_name": [u.get("called_name", "") for u in unresolved],
+                "full_call_name": [(u.get("full_call_name") or "")[:300] for u in unresolved],
+                "receiver_type": [u.get("receiver_type") or "" for u in unresolved],
+                "reason": [u.get("reason", "") for u in unresolved],
+            })
+            c.register("_unresolved_tbl", unresolved_tbl)
+            c.execute("INSERT INTO unresolved_calls SELECT * FROM _unresolved_tbl")
+            c.unregister("_unresolved_tbl")
 
         # Indexes for query performance
         c.execute("CREATE INDEX IF NOT EXISTS idx_fn_name ON functions(name)")
@@ -520,9 +552,7 @@ class DuckDBGraphWriter:
                      f["depth"], f["score"], _json.dumps(f["steps"]))
                     for f in flows
                 ]
-                c.executemany(
-                    "INSERT INTO execution_flows VALUES (?,?,?,?,?,?,?,?)",
-                    flow_rows,
+                _insert_rows(c, "execution_flows", flow_rows,
                 )
         except Exception as exc:
             logger.debug("Execution flow detection failed: %s", exc)
@@ -537,14 +567,23 @@ class DuckDBGraphWriter:
             from ..route_extraction import extract_routes
             detected_routes = extract_routes(parsed_results, repo_path)
             if detected_routes:
-                c.executemany(
-                    "INSERT INTO routes VALUES (?,?,?,?,?,?)",
-                    [(r["method"], r["path"], r["handler"],
+                _insert_rows(c, "routes", [(r["method"], r["path"], r["handler"],
                       r["file"], r["line"], r["framework"])
                      for r in detected_routes],
                 )
         except Exception as exc:
             logger.debug("Route extraction failed: %s", exc)
+
+        try:
+            from ..angular_routes import extract_navigations
+            ng_routes = [r for r in detected_routes if r.get("framework") == "angular"]
+            navs = extract_navigations(parsed_results, repo_path, ng_routes)
+            if navs:
+                _insert_rows(c, "navigations", [(n["caller_name"], n["caller_path"], n["line"], n["target"],
+                      n["route_path"], n["route_handler"], n["route_file"]) for n in navs],
+                )
+        except Exception as exc:
+            logger.debug("Navigation extraction failed: %s", exc)
 
         logger.info("  [timing] route_extraction: %.1fs", time.perf_counter() - _t)
 
@@ -555,9 +594,7 @@ class DuckDBGraphWriter:
             from ..rationale_extraction import extract_rationales
             detected_rationales = extract_rationales(parsed_results, repo_path)
             if detected_rationales:
-                c.executemany(
-                    "INSERT INTO rationales VALUES (?,?,?,?,?)",
-                    [(r["tag"], r["text"], r["file"], r["line"], r["context"])
+                _insert_rows(c, "rationales", [(r["tag"], r["text"], r["file"], r["line"], r["context"])
                      for r in detected_rationales],
                 )
         except Exception as exc:
@@ -572,9 +609,7 @@ class DuckDBGraphWriter:
             from ..op_param_extraction import extract_operational_params
             detected_op_params = extract_operational_params(parsed_results, repo_path)
             if detected_op_params:
-                c.executemany(
-                    "INSERT INTO operational_params VALUES (?,?,?,?,?)",
-                    [(p["name"], p["value"], p["path"],
+                _insert_rows(c, "operational_params", [(p["name"], p["value"], p["path"],
                       p["line_number"], p["category"])
                      for p in detected_op_params],
                 )
@@ -935,7 +970,7 @@ def _write_orm(c, orm_rows) -> None:
         elif kind == "query":
             queries.append((rel, m))
 
-    c.executemany("INSERT INTO orm_entities VALUES (?,?,?,?,?,?)", [
+    _insert_rows(c, "orm_entities", [
         (cls, p, table, schema, store, line) for cls, (p, table, schema, store, line) in entities.items()
     ])
 
@@ -947,7 +982,7 @@ def _write_orm(c, orm_rows) -> None:
         if base in _SPRING_DATA_BASES or base.endswith("Repository") or repo.endswith("Repository"):
             _, table, schema, _, _ = entities[ent]
             repos[repo] = (rel, ent, table, schema)
-    c.executemany("INSERT INTO orm_repositories VALUES (?,?,?,?,?,?)", [
+    _insert_rows(c, "orm_repositories", [
         (repo, p, ent, entities[ent][0], table, schema) for repo, (p, ent, table, schema) in repos.items()
     ])
 
@@ -1005,4 +1040,25 @@ def _write_orm(c, orm_rows) -> None:
             access.append(("", caller or "", caller_path, line, table, schema, op, "repository", repo, method))
 
     if access:
-        c.executemany("INSERT INTO db_access VALUES (?,?,?,?,?,?,?,?,?,?)", list(dict.fromkeys(access)))
+        _insert_rows(c, "db_access", list(dict.fromkeys(access)))
+
+
+def _insert_rows(c, table: str, rows) -> None:
+    """Bulk-insert row tuples (in table column order) via an Arrow table.
+
+    DuckDB's executemany runs one INSERT per row (~0.5 ms each, worse with a
+    large Python heap); a registered Arrow table is a single columnar insert.
+    """
+    import pyarrow as pa
+
+    rows = list(rows)
+    if not rows:
+        return
+    cols = [r[1] for r in c.execute(f"PRAGMA table_info('{table}')").fetchall()]
+    data = {name: [row[i] for row in rows] for i, name in enumerate(cols[: len(rows[0])])}
+    tbl = pa.table(data)
+    c.register("_bulk_rows", tbl)
+    try:
+        c.execute(f"INSERT INTO {table} ({', '.join(tbl.column_names)}) SELECT * FROM _bulk_rows")
+    finally:
+        c.unregister("_bulk_rows")
