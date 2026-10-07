@@ -937,4 +937,51 @@ const handler = () => {};
         assert!(names.contains(&"myFunc".to_string()));
         assert!(names.contains(&"handler".to_string()));
     }
+
+    fn call_context<'a>(calls: &'a [CallData], name: &str) -> Option<&'a str> {
+        calls
+            .iter()
+            .find(|c| c.name == name)
+            .and_then(|c| c.context.0.as_deref())
+    }
+
+    #[test]
+    fn test_call_context_skips_anonymous_callback() {
+        let code = r#"
+function load() {
+    useEffect(() => {
+        fetchData();
+    });
+    items.forEach(function (x) { process(x); });
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = JavaScriptExtractor.find_calls(&tree.root_node(), &source);
+        assert_eq!(call_context(&calls, "fetchData"), Some("load"));
+        assert_eq!(call_context(&calls, "process"), Some("load"));
+    }
+
+    #[test]
+    fn test_call_context_member_assignment_uses_property() {
+        let code = r#"
+Foo.prototype.bar = function () { helper(); };
+obj.handler = () => { other(); };
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = JavaScriptExtractor.find_calls(&tree.root_node(), &source);
+        assert_eq!(call_context(&calls, "helper"), Some("bar"));
+        assert_eq!(call_context(&calls, "other"), Some("handler"));
+    }
+
+    #[test]
+    fn test_call_context_class_field_arrow() {
+        let code = r#"
+class Widget {
+    onClick = () => { this.save(); };
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = JavaScriptExtractor.find_calls(&tree.root_node(), &source);
+        assert_eq!(call_context(&calls, "save"), Some("onClick"));
+    }
 }
