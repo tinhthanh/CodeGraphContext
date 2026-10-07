@@ -75,13 +75,16 @@ pub fn resolve_function_call(
     skip_external: bool,
 ) -> Option<ResolvedCall> {
     let called_name = &call.name;
+    let full_call = &call.full_name;
 
-    // Skip Python builtins
-    if PYTHON_BUILTINS.contains(&called_name.as_str()) {
+    // Skip Python builtins: only unqualified calls from Python files.
+    // `len(x)` is a builtin; `repo.all()` / `service.list()` — or any call
+    // from another language — is a regular method call.
+    let is_python = caller_file_path.ends_with(".py") || caller_file_path.ends_with(".pyi");
+    if is_python && !full_call.contains('.') && PYTHON_BUILTINS.contains(&called_name.as_str()) {
         return None;
     }
 
-    let full_call = &call.full_name;
     let base_obj = if full_call.contains('.') {
         Some(full_call.split('.').next().unwrap_or(""))
     } else {
@@ -584,5 +587,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.called_file_path, "/repo/Repo.java");
+    }
+
+    #[test]
+    fn test_builtin_names_only_skipped_for_unqualified_python_calls() {
+        let resolve = |name: &str, full: &str, file: &str| {
+            let call = receiver_call(name, full, None);
+            resolve_function_call(&call, file, &HashSet::new(), &HashMap::new(), &HashMap::new(), false)
+        };
+        assert!(resolve("len", "len", "/repo/a.py").is_none());
+        assert!(resolve("list", "repo.list", "/repo/a.py").is_some());
+        assert!(resolve("list", "service.list", "/repo/A.java").is_some());
+        assert!(resolve("all", "all", "/repo/a.ts").is_some());
     }
 }
