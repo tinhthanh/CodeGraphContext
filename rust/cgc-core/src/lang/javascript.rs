@@ -228,6 +228,80 @@ impl JavaScriptExtractor {
         params
     }
 
+    /// Process an import_clause node, which wraps the actual import specifiers.
+    fn process_import_clause(
+        &self,
+        clause: &Node,
+        import_source: &str,
+        line_number: usize,
+        source: &[u8],
+        imports: &mut Vec<ImportData>,
+    ) {
+        for i in 0..clause.child_count() {
+            let child = match clause.child(i) {
+                Some(c) => c,
+                None => continue,
+            };
+            match child.kind() {
+                "identifier" => {
+                    let alias = get_node_text(&child, source).to_string();
+                    imports.push(ImportData {
+                        name: "default".to_string(),
+                        full_import_name: import_source.to_string(),
+                        line_number,
+                        alias: Some(alias),
+                        context: (None, None),
+                        lang: self.lang_name().to_string(),
+                        is_dependency: false,
+                    });
+                }
+                "namespace_import" => {
+                    let alias_node = (0..child.child_count())
+                        .filter_map(|j| child.child(j))
+                        .find(|c| c.kind() == "identifier");
+                    if let Some(alias_n) = alias_node {
+                        let alias = get_node_text(&alias_n, source).to_string();
+                        imports.push(ImportData {
+                            name: "*".to_string(),
+                            full_import_name: import_source.to_string(),
+                            line_number,
+                            alias: Some(alias),
+                            context: (None, None),
+                            lang: self.lang_name().to_string(),
+                            is_dependency: false,
+                        });
+                    }
+                }
+                "named_imports" => {
+                    for j in 0..child.child_count() {
+                        if let Some(specifier) = child.child(j) {
+                            if specifier.kind() == "import_specifier" {
+                                let spec_name = specifier
+                                    .child_by_field_name("name")
+                                    .map(|n| get_node_text(&n, source).to_string());
+                                let spec_alias = specifier
+                                    .child_by_field_name("alias")
+                                    .map(|n| get_node_text(&n, source).to_string());
+                                if let Some(imported_name) = spec_name {
+                                    imports.push(ImportData {
+                                        name: imported_name,
+                                        full_import_name: import_source.to_string(),
+                                        line_number,
+                                        alias: spec_alias,
+                                        context: (None, None),
+                                        lang: self.lang_name().to_string(),
+                                        is_dependency: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Extract JSDoc comment preceding a function node.
     fn get_jsdoc_comment(&self, func_node: &Node, source: &[u8]) -> Option<String> {
         let mut prev = func_node.prev_sibling();
@@ -488,91 +562,15 @@ impl LanguageExtractor for JavaScriptExtractor {
                         });
                     }
                     Some(clause) => {
-                        // import_clause wraps the actual form: look inside it
-                        let inner = if clause.kind() == "import_clause" {
-                            // Get the first named child inside import_clause
-                            (0..clause.named_child_count())
-                                .filter_map(|i| clause.named_child(i))
-                                .next()
-                        } else {
-                            Some(clause)
-                        };
-                        let inner = match inner {
-                            Some(n) => n,
-                            None => continue,
-                        };
-                        match inner.kind() {
-                            "identifier" => {
-                                // Default import: import foo from '...'
-                                let alias = get_node_text(&inner, source).to_string();
-                                imports.push(ImportData {
-                                    name: "default".to_string(),
-                                    full_import_name: import_source,
-                                    line_number,
-                                    alias: Some(alias),
-                                    context: (None, None),
-                                    lang: self.lang_name().to_string(),
-                                    is_dependency: false,
-                                });
-                            }
-                            "namespace_import" => {
-                                // import * as name from '...'
-                                let alias = inner
-                                    .child_by_field_name("alias")
-                                    .or_else(|| {
-                                        // Fallback: find identifier child
-                                        (0..inner.child_count())
-                                            .filter_map(|i| inner.child(i))
-                                            .find(|c| c.kind() == "identifier")
-                                    })
-                                    .map(|n| get_node_text(&n, source).to_string());
-                                imports.push(ImportData {
-                                    name: "*".to_string(),
-                                    full_import_name: import_source,
-                                    line_number,
-                                    alias,
-                                    context: (None, None),
-                                    lang: self.lang_name().to_string(),
-                                    is_dependency: false,
-                                });
-                            }
-                            "named_imports" => {
-                                // import { name, name as alias } from '...'
-                                for i in 0..inner.child_count() {
-                                    if let Some(spec) = inner.child(i) {
-                                        if spec.kind() == "import_specifier" {
-                                            let name_node = spec.child_by_field_name("name");
-                                            let alias_node = spec.child_by_field_name("alias");
-                                            if let Some(nn) = name_node {
-                                                let original = get_node_text(&nn, source).to_string();
-                                                let alias = alias_node.map(|a| get_node_text(&a, source).to_string());
-                                                imports.push(ImportData {
-                                                    name: original,
-                                                    full_import_name: import_source.clone(),
-                                                    line_number,
-                                                    alias,
-                                                    context: (None, None),
-                                                    lang: self.lang_name().to_string(),
-                                                    is_dependency: false,
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                // Fallback: treat as side-effect
-                                imports.push(ImportData {
-                                    name: import_source.clone(),
-                                    full_import_name: import_source,
-                                    line_number,
-                                    alias: None,
-                                    context: (None, None),
-                                    lang: self.lang_name().to_string(),
-                                    is_dependency: false,
-                                });
-                            }
-                        }
+                        // One clause can carry several bindings at once
+                        // (import React, { useState } from 'react').
+                        self.process_import_clause(
+                            &clause,
+                            &import_source,
+                            line_number,
+                            source,
+                            &mut imports,
+                        );
                     }
                 }
             } else if node.kind() == "call_expression" {
@@ -983,5 +981,25 @@ class Widget {
         let (tree, source) = parse_source(code);
         let calls = JavaScriptExtractor.find_calls(&tree.root_node(), &source);
         assert_eq!(call_context(&calls, "save"), Some("onClick"));
+    }
+
+    #[test]
+    fn test_find_imports_default_and_named_together() {
+        let code = "import React, { useState, useEffect as fx } from 'react';\n";
+        let (tree, source) = parse_source(code);
+        let imports = JavaScriptExtractor.find_imports(&tree.root_node(), &source);
+        let got: Vec<(&str, Option<&str>)> = imports
+            .iter()
+            .map(|i| (i.name.as_str(), i.alias.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("default", Some("React")),
+                ("useState", None),
+                ("useEffect", Some("fx")),
+            ]
+        );
+        assert!(imports.iter().all(|i| i.full_import_name == "react"));
     }
 }
