@@ -183,6 +183,37 @@ impl JavaExtractor {
         Some(base.to_string())
     }
 
+    fn child_of_kind<'t>(node: &Node<'t>, kind: &str) -> Option<Node<'t>> {
+        (0..node.child_count())
+            .filter_map(|i| node.child(i))
+            .find(|c| c.kind() == kind)
+    }
+
+    /// Type names listed under a superclass / super_interfaces /
+    /// extends_interfaces node, with generic arguments stripped.
+    fn base_type_names(node: &Node, source: &[u8]) -> Vec<String> {
+        // The types sit either directly under the node (superclass) or in a
+        // type_list child (super_interfaces, extends_interfaces).
+        let holder = Self::child_of_kind(node, "type_list")
+            .or_else(|| Self::child_of_kind(node, "interface_type_list"))
+            .unwrap_or(*node);
+        let mut names = Vec::new();
+        for i in 0..holder.child_count() {
+            let Some(child) = holder.child(i) else { continue };
+            let type_node = match child.kind() {
+                "type_identifier" | "scoped_type_identifier" => child,
+                // generic_type: first child is the raw type, then type_arguments
+                "generic_type" => match child.child(0) {
+                    Some(t) => t,
+                    None => continue,
+                },
+                _ => continue,
+            };
+            names.push(get_node_text(&type_node, source).to_string());
+        }
+        names
+    }
+
     /// Start byte of the closest ancestor of one of `kinds`, if any.
     fn enclosing_scope(node: &Node, kinds: &[&str]) -> Option<usize> {
         let mut curr = node.parent();
@@ -384,56 +415,24 @@ impl LanguageExtractor for JavaExtractor {
             };
             let class_name = get_node_text(&name_node, source).to_string();
 
+            // Base types, as simple names usable for lookup (generic arguments
+            // dropped): `extends Base<T>` → `Base`, `implements a.b.Api` → `a.b.Api`.
             let mut bases = Vec::new();
 
-            // Look for superclass (extends)
-            if let Some(superclass_node) = node.child_by_field_name("superclass") {
-                bases.push(get_node_text(&superclass_node, source).to_string());
+            // class X extends Base
+            if let Some(superclass) = node.child_by_field_name("superclass") {
+                bases.extend(Self::base_type_names(&superclass, source));
             }
-
-            // Look for interfaces (implements) - try field name first, then scan children
-            let interfaces_node = node
+            // class/record/enum X implements A, B
+            if let Some(ifaces) = node
                 .child_by_field_name("interfaces")
-                .or_else(|| {
-                    (0..node.child_count())
-                        .filter_map(|i| node.child(i))
-                        .find(|c| c.kind() == "super_interfaces")
-                });
-
-            if let Some(ifaces) = interfaces_node {
-                // Find type_list within
-                let type_list = ifaces
-                    .child_by_field_name("list")
-                    .or_else(|| {
-                        (0..ifaces.child_count())
-                            .filter_map(|i| ifaces.child(i))
-                            .find(|c| c.kind() == "type_list")
-                    });
-
-                if let Some(tl) = type_list {
-                    for i in 0..tl.child_count() {
-                        if let Some(child) = tl.child(i) {
-                            if matches!(
-                                child.kind(),
-                                "type_identifier" | "generic_type" | "scoped_type_identifier"
-                            ) {
-                                bases.push(get_node_text(&child, source).to_string());
-                            }
-                        }
-                    }
-                } else {
-                    // Fallback: scan children of interfaces node directly
-                    for i in 0..ifaces.child_count() {
-                        if let Some(child) = ifaces.child(i) {
-                            if matches!(
-                                child.kind(),
-                                "type_identifier" | "generic_type" | "scoped_type_identifier"
-                            ) {
-                                bases.push(get_node_text(&child, source).to_string());
-                            }
-                        }
-                    }
-                }
+                .or_else(|| Self::child_of_kind(&node, "super_interfaces"))
+            {
+                bases.extend(Self::base_type_names(&ifaces, source));
+            }
+            // interface X extends A, B
+            if let Some(ext) = Self::child_of_kind(&node, "extends_interfaces") {
+                bases.extend(Self::base_type_names(&ext, source));
             }
 
             let (context, _, _) = get_parent_context(&node, source, TYPE_DECL_KINDS);
@@ -837,5 +836,24 @@ public class PointController {
         assert_eq!(ty("items.add").as_deref(), Some("List")); // local, generics stripped
         assert_eq!(ty("req.validate").as_deref(), Some("Req")); // parameter
         assert_eq!(ty("Helper.run").as_deref(), Some("Helper")); // static call
+    }
+
+    #[test]
+    fn test_bases_strip_keywords_and_generics() {
+        let code = r#"
+public class OrderController extends BaseCrudController<
+        CreateReq, UpdateReq> implements Auditable, a.b.Traceable<Order> {
+}
+public interface SettingRepository extends TenantAwareRepository<Setting>, Searchable {
+}
+public record Point(int x) implements Comparable<Point> {
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let classes = JavaExtractor.find_classes(&tree.root_node(), &source, false);
+        let bases = |n: &str| classes.iter().find(|c| c.name == n).unwrap().bases.clone();
+        assert_eq!(bases("OrderController"), vec!["BaseCrudController", "Auditable", "a.b.Traceable"]);
+        assert_eq!(bases("SettingRepository"), vec!["TenantAwareRepository", "Searchable"]);
+        assert_eq!(bases("Point"), vec!["Comparable"]);
     }
 }
