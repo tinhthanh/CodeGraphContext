@@ -485,8 +485,13 @@ impl LanguageExtractor for PythonExtractor {
                         };
 
                         if let Some(imported_name) = imported_name {
-                            let full_import_name =
-                                format!("{module_name}.{imported_name}");
+                            // `from . import x` has module_name '.'; joining with
+                            // another dot would yield '..x' (one level too high).
+                            let full_import_name = if module_name.ends_with('.') {
+                                format!("{module_name}{imported_name}")
+                            } else {
+                                format!("{module_name}.{imported_name}")
+                            };
                             if seen_modules.contains(&full_import_name) {
                                 continue;
                             }
@@ -777,6 +782,21 @@ from m import (
         assert_eq!(full, vec!["a.b", "a.c", "m.p", "m.q"]);
         assert_eq!(imports[1].name, "c");
         assert_eq!(imports[1].alias.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn test_relative_from_imports() {
+        let code = r#"
+from . import x
+from .. import y
+from .mod import z
+from ..pkg.mod import w
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = PythonExtractor;
+        let imports = ext.find_imports(&tree.root_node(), &source);
+        let full: Vec<&str> = imports.iter().map(|i| i.full_import_name.as_str()).collect();
+        assert_eq!(full, vec![".x", "..y", ".mod.z", "..pkg.mod.w"]);
     }
 
     #[test]
