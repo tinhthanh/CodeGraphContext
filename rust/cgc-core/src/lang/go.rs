@@ -226,6 +226,28 @@ impl GoExtractor {
         bases
     }
 
+    /// Embedded interfaces of an interface_type, e.g. `io.Reader`, `Closer`.
+    /// Type-set constraints (`~int | string`) and the builtins `any`/`comparable`
+    /// are not inheritance and are skipped.
+    fn interface_embedded_bases(&self, interface_type: &Node, source: &[u8]) -> Vec<String> {
+        let mut bases = Vec::new();
+        for i in 0..interface_type.named_child_count() {
+            let Some(elem) = interface_type.named_child(i) else { continue };
+            if elem.kind() != "type_elem" || elem.named_child_count() != 1 {
+                continue;
+            }
+            if let Some(base) = elem
+                .named_child(0)
+                .and_then(|t| self.base_type_name(&t, source))
+            {
+                if base != "any" && base != "comparable" {
+                    bases.push(base);
+                }
+            }
+        }
+        bases
+    }
+
     fn get_docstring(&self, func_node: &Node, source: &[u8]) -> Option<String> {
         let mut prev = func_node.prev_sibling();
         while let Some(sib) = prev {
@@ -461,12 +483,18 @@ impl LanguageExtractor for GoExtractor {
                 None => continue,
             };
             let name = get_node_text(&node, source).to_string();
+            let bases = node
+                .parent()
+                .and_then(|spec| spec.child_by_field_name("type"))
+                .filter(|t| t.kind() == "interface_type")
+                .map(|t| self.interface_embedded_bases(&t, source))
+                .unwrap_or_default();
 
             let mut class = ClassData {
                 name,
                 line_number: type_decl.start_position().row + 1,
                 end_line: type_decl.end_position().row + 1,
-                bases: Vec::new(),
+                bases,
                 context: None,
                 decorators: Vec::new(),
                 lang: self.lang_name().to_string(),
@@ -733,6 +761,36 @@ type Server struct {
         let classes = ext.find_classes(&tree.root_node(), &source, false);
         let server = classes.iter().find(|c| c.name == "Server").unwrap();
         assert_eq!(server.bases, vec!["Base", "Logger", "Handler"]);
+    }
+
+    #[test]
+    fn test_interface_embedding_as_bases() {
+        let code = r#"
+package main
+
+type ReadCloser interface {
+    io.Reader
+    Closer
+    Extra() int
+}
+
+type Number interface {
+    ~int | ~float64
+}
+
+type Key interface {
+    comparable
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = GoExtractor;
+        let classes = ext.find_classes(&tree.root_node(), &source, false);
+        let rc = classes.iter().find(|c| c.name == "ReadCloser").unwrap();
+        assert_eq!(rc.bases, vec!["Reader", "Closer"]);
+        let num = classes.iter().find(|c| c.name == "Number").unwrap();
+        assert!(num.bases.is_empty());
+        let key = classes.iter().find(|c| c.name == "Key").unwrap();
+        assert!(key.bases.is_empty());
     }
 
     #[test]
