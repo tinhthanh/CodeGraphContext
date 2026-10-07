@@ -82,6 +82,12 @@ const QUERY_INTERFACES: &str = r#"
     ) @interface_node
 "#;
 
+const QUERY_ENUMS: &str = r#"
+    (enum_declaration
+        name: (identifier) @name
+    ) @enum_node
+"#;
+
 const QUERY_TYPE_ALIASES: &str = r#"
     (type_alias_declaration
         name: (type_identifier) @name
@@ -114,6 +120,7 @@ const QUERY_PRE_SCAN: &str = r#"
     (variable_declarator name: (identifier) @name value: (arrow_function))
     (interface_declaration name: (type_identifier) @name)
     (type_alias_declaration name: (type_identifier) @name)
+    (enum_declaration name: (identifier) @name)
 "#;
 
 /// Context types used for parent context lookups in TypeScript.
@@ -475,7 +482,7 @@ impl LanguageExtractor for TypeScriptExtractor {
             };
 
             let mut func = FunctionData {
-                return_type: None,
+                return_type: super::ts_common::return_type(func_node, source),
                 name,
                 line_number: func_node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -661,6 +668,27 @@ impl LanguageExtractor for TypeScriptExtractor {
             classes.push(class);
         }
 
+
+        // Enums
+        for (node, capture_name) in self.execute_query(QUERY_ENUMS, root, source) {
+            if capture_name != "enum_node" {
+                continue;
+            }
+            let Some(name_node) = node.child_by_field_name("name") else { continue };
+            classes.push(ClassData {
+                kind: class_kind(&node),
+                name: get_node_text(&name_node, source).to_string(),
+                line_number: node.start_position().row + 1,
+                end_line: node.end_position().row + 1,
+                bases: Vec::new(),
+                context: None,
+                decorators: Vec::new(),
+                lang: self.lang_name().to_string(),
+                is_dependency: false,
+                source: index_source.then(|| get_node_text(&node, source).to_string()),
+                docstring: None,
+            });
+        }
         classes
     }
 
@@ -749,6 +777,7 @@ impl LanguageExtractor for TypeScriptExtractor {
 
     fn find_calls(&self, root: &Node, source: &[u8]) -> Vec<CallData> {
         let mut calls = Vec::new();
+        let typed = super::ts_common::collect_typed_names(&self.language(), root, source);
 
         for (node, capture_name) in self.execute_query(QUERY_CALLS, root, source) {
             if capture_name != "name" {
@@ -778,7 +807,8 @@ impl LanguageExtractor for TypeScriptExtractor {
             };
 
             let name = get_node_text(&node, source).to_string();
-            let full_name = get_node_text(&call_node, source).to_string();
+            let (full_name, inferred_obj_type, receiver_chain) =
+                super::ts_common::call_receiver(&call_node, &name, source, &typed);
 
             let mut args = Vec::new();
             if let Some(arguments_node) = call_node.child_by_field_name("arguments") {
@@ -804,12 +834,12 @@ impl LanguageExtractor for TypeScriptExtractor {
             );
 
             calls.push(CallData {
-                receiver_chain: Vec::new(),
+                receiver_chain,
                 name,
                 full_name,
                 line_number: node.start_position().row + 1,
                 args,
-                inferred_obj_type: None,
+                inferred_obj_type,
                 context,
                 class_context: (class_ctx.0, class_ctx.1),
                 lang: self.lang_name().to_string(),
@@ -885,6 +915,9 @@ impl LanguageExtractor for TypeScriptExtractor {
             });
         }
 
+
+        // Class fields and constructor parameter properties (typed), for chains
+        variables.extend(super::ts_common::class_field_variables(&self.language(), root, source, self.lang_name()));
         variables
     }
 
@@ -1223,5 +1256,64 @@ class Widget {
         assert_eq!(ctx("fetchData").as_deref(), Some("load"));
         assert_eq!(ctx("helper").as_deref(), Some("bar"));
         assert_eq!(ctx("save").as_deref(), Some("onClick"));
+    }
+
+    #[test]
+    fn test_receiver_types_and_enums() {
+        let code = r#"
+export enum Status { Active, Blocked }
+
+@Component({ selector: 'app-x' })
+export class CustomerComponent {
+  private readonly http = inject(HttpClient);
+  private repo: CustomerRepo;
+  cache = new CacheStore();
+  constructor(private customerService: CustomerService, readonly bus: EventBus, plain: Helper) {}
+
+  load(id: string, opts: LoadOptions): Observable<Customer> {
+    this.customerService.get(id);
+    this.bus.emit('x');
+    this.http.get('/api');
+    this.cache.clear();
+    this.repo.findAll().filter(x => x);
+    opts.validate();
+    const svc: PetService = this.pets;
+    svc.list();
+    const fresh = new Builder();
+    fresh.build();
+    plain.run();
+    return null;
+  }
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = TypeScriptExtractor;
+        let calls = ext.find_calls(&tree.root_node(), &source);
+        let get = |full: &str| calls.iter().find(|c| c.full_name == full).unwrap_or_else(|| panic!("{full}: {:?}", calls.iter().map(|c| &c.full_name).collect::<Vec<_>>()));
+        assert_eq!(get("this.customerService.get").inferred_obj_type.as_deref(), Some("CustomerService"));
+        assert_eq!(get("this.bus.emit").inferred_obj_type.as_deref(), Some("EventBus"));
+        assert_eq!(get("this.http.get").inferred_obj_type.as_deref(), Some("HttpClient"));
+        assert_eq!(get("this.cache.clear").inferred_obj_type.as_deref(), Some("CacheStore"));
+        let chained = get("this.repo.findAll().filter");
+        assert_eq!((chained.inferred_obj_type.as_deref(), chained.receiver_chain.clone()),
+                   (Some("CustomerComponent"), vec!["repo".to_string(), "findAll()".to_string()]));
+        assert_eq!(get("opts.validate").inferred_obj_type.as_deref(), Some("LoadOptions"));
+        assert_eq!(get("svc.list").inferred_obj_type.as_deref(), Some("PetService"));
+        assert_eq!(get("fresh.build").inferred_obj_type.as_deref(), Some("Builder"));
+        // constructor param without modifier is not a field, but is typed inside the constructor only
+        assert_eq!(get("plain.run").inferred_obj_type.as_deref(), Some("plain"));
+
+        let funcs = ext.find_functions(&tree.root_node(), &source, false);
+        assert_eq!(funcs.iter().find(|f| f.name == "load").unwrap().return_type.as_deref(), Some("Observable<Customer>"));
+
+        let classes = ext.find_classes(&tree.root_node(), &source, false);
+        assert!(classes.iter().any(|c| c.name == "Status" && c.kind == "enum"));
+
+        let vars = ext.find_variables(&tree.root_node(), &source);
+        let field = |n: &str| vars.iter().find(|v| v.name == n && v.context.as_deref() == Some("CustomerComponent")).map(|v| v.type_annotation.clone());
+        assert_eq!(field("customerService"), Some(Some("CustomerService".to_string())));
+        assert_eq!(field("repo"), Some(Some("CustomerRepo".to_string())));
+        assert_eq!(field("http"), Some(Some("HttpClient".to_string())));
+        assert_eq!(field("plain"), None);
     }
 }

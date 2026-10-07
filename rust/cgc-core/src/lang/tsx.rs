@@ -86,6 +86,12 @@ const QUERY_INTERFACES: &str = r#"
     ) @interface_node
 "#;
 
+const QUERY_ENUMS: &str = r#"
+    (enum_declaration
+        name: (identifier) @name
+    ) @enum_node
+"#;
+
 const QUERY_TYPE_ALIASES: &str = r#"
     (type_alias_declaration
         name: (type_identifier) @name
@@ -466,7 +472,7 @@ impl LanguageExtractor for TsxExtractor {
             };
 
             let mut func = FunctionData {
-                return_type: None,
+                return_type: super::ts_common::return_type(func_node, source),
                 name,
                 line_number: func_node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -654,6 +660,27 @@ impl LanguageExtractor for TsxExtractor {
             classes.push(class);
         }
 
+
+        // Enums
+        for (node, capture_name) in self.execute_query(QUERY_ENUMS, root, source) {
+            if capture_name != "enum_node" {
+                continue;
+            }
+            let Some(name_node) = node.child_by_field_name("name") else { continue };
+            classes.push(ClassData {
+                kind: class_kind(&node),
+                name: get_node_text(&name_node, source).to_string(),
+                line_number: node.start_position().row + 1,
+                end_line: node.end_position().row + 1,
+                bases: Vec::new(),
+                context: None,
+                decorators: Vec::new(),
+                lang: self.lang_name().to_string(),
+                is_dependency: false,
+                source: index_source.then(|| get_node_text(&node, source).to_string()),
+                docstring: None,
+            });
+        }
         classes
     }
 
@@ -720,6 +747,7 @@ impl LanguageExtractor for TsxExtractor {
 
     fn find_calls(&self, root: &Node, source: &[u8]) -> Vec<CallData> {
         let mut calls = Vec::new();
+        let typed = super::ts_common::collect_typed_names(&self.language(), root, source);
 
         for (node, capture_name) in self.execute_query(QUERY_CALLS, root, source) {
             if capture_name != "name" {
@@ -747,13 +775,9 @@ impl LanguageExtractor for TsxExtractor {
                 }
             };
 
-            let full_call_node = call_node
-                .child_by_field_name("function")
-                .or_else(|| call_node.child_by_field_name("constructor"));
-            let full_name = match full_call_node {
-                Some(ref n) => get_node_text(n, source).to_string(),
-                None => get_node_text(&node, source).to_string(),
-            };
+            let name = get_node_text(&node, source).to_string();
+            let (full_name, inferred_obj_type, receiver_chain) =
+                super::ts_common::call_receiver(&call_node, &name, source, &typed);
 
             let context = get_parent_context(&node, source, FC_TYPES);
             let class_ctx = get_parent_context(
@@ -763,12 +787,12 @@ impl LanguageExtractor for TsxExtractor {
             );
 
             calls.push(CallData {
-                receiver_chain: Vec::new(),
-                name: get_node_text(&node, source).to_string(),
+                receiver_chain,
+                name,
                 full_name,
                 line_number: node.start_position().row + 1,
                 args: Vec::new(),
-                inferred_obj_type: None,
+                inferred_obj_type,
                 context,
                 class_context: (class_ctx.0, class_ctx.1),
                 lang: self.lang_name().to_string(),
@@ -830,6 +854,9 @@ impl LanguageExtractor for TsxExtractor {
             });
         }
 
+
+        // Class fields and constructor parameter properties (typed), for chains
+        variables.extend(super::ts_common::class_field_variables(&self.language(), root, source, self.lang_name()));
         variables
     }
 }

@@ -406,15 +406,20 @@ pub fn resolve_function_call(
     let self_receivers = ["self", "this", "super", "super()", "cls", "@"];
     let is_self_receiver = base_obj.map_or(false, |b| self_receivers.contains(&b));
 
-    let lookup_name = if is_chained && is_self_receiver {
-        called_name.as_str()
+    // `this.field.m()`: the receiver is the field, not `this`. Look it up by
+    // the field name (never by `m`, which would bind to a same-named method
+    // of the caller's class) and treat it like any other object receiver.
+    let self_field_call = is_chained && is_self_receiver;
+    let lookup_name = if self_field_call {
+        full_call.split('.').nth(1).unwrap_or(called_name.as_str())
     } else {
         base_obj.unwrap_or(called_name.as_str())
     };
 
     // `obj.method()` on a receiver other than self/this: the target lives on
     // obj's type, never on a same-named function of the caller's file.
-    let qualified_other = base_obj.map_or(false, |b| !b.is_empty() && !self_receivers.contains(&b));
+    let qualified_other =
+        self_field_call || base_obj.map_or(false, |b| !b.is_empty() && !self_receivers.contains(&b));
     // Receiver whose (capitalised) type is known but defined outside the repo,
     // e.g. `list.get()` with `List<Foo> list` — don't guess a target by name.
     let external_receiver_type = qualified_other
@@ -579,8 +584,11 @@ pub fn resolve_function_call(
                 return None;
             }
             // Pointing it at the caller's file would bind it to a same-named
-            // local function (false recursion), so drop it in that case.
-            if local_names.contains(called_name.as_str()) {
+            // local function (false recursion), so drop it in that case —
+            // including the caller itself (`error() { console.error(..) }`).
+            if local_names.contains(called_name.as_str())
+                || call.context_name.as_deref() == Some(called_name.as_str())
+            {
                 return None;
             }
             resolved = Some((own(), 9));
@@ -984,7 +992,7 @@ mod tests {
             args: vec![],
             inferred_obj_type: obj_type.map(|s| s.to_string()),
             receiver_chain: vec![],
-            context_name: Some(name.to_string()),
+            context_name: Some("caller_fn".to_string()),
             context_type: Some("method_declaration".to_string()),
             context_line: Some(9),
             class_context_name: None,
@@ -1278,5 +1286,31 @@ mod tests {
         let local: HashSet<String> = ["supplier".to_string(), "run".to_string()].into();
         let r = resolve_function_call(&call, "/r/SupplierTest.java", &local, &HashMap::new(), &imports_map, &types, false).unwrap();
         assert_eq!(r.called_file_path, "/r/Supplier.java");
+    }
+
+    #[test]
+    fn test_this_field_call_not_bound_to_callers_namesake() {
+        // EcommerceService.get() { this.invoiceService.get(id) }
+        let (files, mut imports_map) = hierarchy_fixture();
+        let types = TypeIndex::build(&files);
+        imports_map.insert("InvoiceService".to_string(), vec!["/r/InvoiceService.java".to_string()]);
+        let local: HashSet<String> = ["get".to_string()].into();
+        // receiver type known and in the repo → that file
+        let call = receiver_call("get", "this.invoiceService.get", Some("InvoiceService"));
+        let r = resolve_function_call(&call, "/r/Ecommerce.java", &local, &HashMap::new(), &imports_map, &types, false).unwrap();
+        assert_eq!(r.called_file_path, "/r/InvoiceService.java");
+        // receiver type unknown → never the caller's own `get`
+        let call = receiver_call("get", "this.invoiceService.get", None);
+        let r = resolve_function_call(&call, "/r/Ecommerce.java", &local, &HashMap::new(), &imports_map, &types, false);
+        assert!(r.map_or(true, |r| r.called_file_path != "/r/Ecommerce.java"));
+    }
+
+    #[test]
+    fn test_unresolved_call_named_like_its_caller_is_dropped() {
+        // error(msg) { console.error(msg) } — not a recursive call
+        let mut call = receiver_call("error", "console.error", Some("console"));
+        call.context_name = Some("error".to_string());
+        let r = resolve_function_call(&call, "/r/Log.ts", &HashSet::new(), &HashMap::new(), &HashMap::new(), &TypeIndex::default(), false);
+        assert!(r.is_none());
     }
 }

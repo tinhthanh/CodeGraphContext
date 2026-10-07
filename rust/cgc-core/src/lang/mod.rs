@@ -71,6 +71,7 @@ pub mod python;
 pub mod javascript;
 pub mod typescript;
 pub mod tsx;
+pub mod ts_common;
 pub mod go;
 pub mod java;
 pub mod cpp;
