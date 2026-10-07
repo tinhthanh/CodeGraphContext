@@ -64,6 +64,13 @@ fn file_data_to_py(py: Python<'_>, data: &FileData) -> PyResult<PyObject> {
         .collect::<PyResult<_>>()?;
     dict.set_item("injections", injections)?;
 
+    let orm: Vec<PyObject> = data
+        .orm_mappings
+        .iter()
+        .map(|m| orm_to_py(py, m))
+        .collect::<PyResult<_>>()?;
+    dict.set_item("orm_mappings", orm)?;
+
     Ok(dict.into_any().unbind())
 }
 
@@ -191,5 +198,22 @@ fn injection_to_py(py: Python<'_>, inj: &InjectionData) -> PyResult<PyObject> {
     dict.set_item("line_number", inj.line_number)?;
     dict.set_item("kind", &inj.kind)?;
     dict.set_item("stereotype", &inj.stereotype)?;
+    Ok(dict.into_any().unbind())
+}
+
+fn orm_to_py(py: Python<'_>, m: &OrmMappingData) -> PyResult<PyObject> {
+    let dict = PyDict::new(py);
+    dict.set_item("kind", &m.kind)?;
+    dict.set_item("class_name", &m.class_name)?;
+    dict.set_item("method_name", &m.method_name)?;
+    dict.set_item("datastore", &m.datastore)?;
+    dict.set_item("tables", &m.tables)?;
+    dict.set_item("schema", &m.schema)?;
+    dict.set_item("entity", &m.entity)?;
+    dict.set_item("base", &m.base)?;
+    dict.set_item("operation", &m.operation)?;
+    dict.set_item("native", m.native)?;
+    dict.set_item("sql", &m.sql)?;
+    dict.set_item("line_number", m.line_number)?;
     Ok(dict.into_any().unbind())
 }
