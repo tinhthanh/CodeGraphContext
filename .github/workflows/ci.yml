@@ -50,7 +50,7 @@ jobs:
           # The core install (no extras) must run the full DuckDB pipeline:
           # catches imports of packages that only live in the `full` extra.
           mkdir -p /tmp/cgc-smoke/src && cd /tmp/cgc-smoke
-          printf 'class Repo:\n    def save(self): pass\n\nclass Svc:\n    def __init__(self, repo: Repo):\n        self.repo = repo\n    def run(self):\n        self.repo.save()\n' > src/app.py
+          printf 'def helper():\n    return 1\n\ndef main():\n    return helper()\n' > src/app.py
           cgc-wiki index . --output out
           python -c "
           import duckdb
