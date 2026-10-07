@@ -305,8 +305,12 @@ impl LanguageExtractor for PythonExtractor {
 
             // Decorators
             let mut decorators = Vec::new();
-            for i in 0..func_node.child_count() {
-                if let Some(child) = func_node.child(i) {
+            // In tree-sitter-python, decorators are children of the parent
+            // decorated_definition, not of the definition node itself.
+            let decorated = func_node.parent().filter(|p| p.kind() == "decorated_definition");
+            let deco_owner = decorated.unwrap_or(func_node);
+            for i in 0..deco_owner.child_count() {
+                if let Some(child) = deco_owner.child(i) {
                     if child.kind() == "decorator" {
                         decorators.push(get_node_text(&child, source).to_string());
                     }
@@ -384,8 +388,12 @@ impl LanguageExtractor for PythonExtractor {
             }
 
             let mut decorators = Vec::new();
-            for i in 0..class_node.child_count() {
-                if let Some(child) = class_node.child(i) {
+            // In tree-sitter-python, decorators are children of the parent
+            // decorated_definition, not of the definition node itself.
+            let decorated = class_node.parent().filter(|p| p.kind() == "decorated_definition");
+            let deco_owner = decorated.unwrap_or(class_node);
+            for i in 0..deco_owner.child_count() {
+                if let Some(child) = deco_owner.child(i) {
                     if child.kind() == "decorator" {
                         decorators.push(get_node_text(&child, source).to_string());
                     }
@@ -464,23 +472,10 @@ impl LanguageExtractor for PythonExtractor {
                     };
                     let module_name = get_node_text(&module_name_node, source);
 
-                    let import_list_node = match node.child_by_field_name("name") {
-                        Some(n) => n,
-                        None => continue,
-                    };
-
-                    // Collect import items: either the node itself is the import,
-                    // or it's a container with multiple children
-                    let items: Vec<Node> = match import_list_node.kind() {
-                        "aliased_import" | "dotted_name" | "identifier" => {
-                            vec![import_list_node]
-                        }
-                        _ => {
-                            (0..import_list_node.child_count())
-                                .filter_map(|i| import_list_node.child(i))
-                                .collect()
-                        }
-                    };
+                    // children_by_field_name returns ALL imported names;
+                    // child_by_field_name would only return the first one.
+                    let mut cursor = node.walk();
+                    let items: Vec<Node> = node.children_by_field_name("name", &mut cursor).collect();
 
                     for child in items {
                         let (imported_name, alias) = if child.kind() == "aliased_import" {
@@ -498,8 +493,13 @@ impl LanguageExtractor for PythonExtractor {
                         };
 
                         if let Some(imported_name) = imported_name {
-                            let full_import_name =
-                                format!("{module_name}.{imported_name}");
+                            // `from . import x` has module_name '.'; joining with
+                            // another dot would yield '..x' (one level too high).
+                            let full_import_name = if module_name.ends_with('.') {
+                                format!("{module_name}{imported_name}")
+                            } else {
+                                format!("{module_name}.{imported_name}")
+                            };
                             if seen_modules.contains(&full_import_name) {
                                 continue;
                             }
@@ -772,6 +772,63 @@ from collections import OrderedDict as OD
         assert_eq!(imports[2].full_import_name, "pathlib.Path");
         assert_eq!(imports[3].name, "OrderedDict");
         assert_eq!(imports[3].alias.as_deref(), Some("OD"));
+    }
+
+    #[test]
+    fn test_from_import_multiple_names() {
+        let code = r#"
+from a import b, c as x
+from m import (
+    p,
+    q,
+)
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = PythonExtractor;
+        let imports = ext.find_imports(&tree.root_node(), &source);
+        let full: Vec<&str> = imports.iter().map(|i| i.full_import_name.as_str()).collect();
+        assert_eq!(full, vec!["a.b", "a.c", "m.p", "m.q"]);
+        assert_eq!(imports[1].name, "c");
+        assert_eq!(imports[1].alias.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn test_relative_from_imports() {
+        let code = r#"
+from . import x
+from .. import y
+from .mod import z
+from ..pkg.mod import w
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = PythonExtractor;
+        let imports = ext.find_imports(&tree.root_node(), &source);
+        let full: Vec<&str> = imports.iter().map(|i| i.full_import_name.as_str()).collect();
+        assert_eq!(full, vec![".x", "..y", ".mod.z", "..pkg.mod.w"]);
+    }
+
+    #[test]
+    fn test_decorators() {
+        let code = r#"
+@dataclass
+@other(1)
+class Point:
+    @staticmethod
+    def make():
+        pass
+
+    def plain(self):
+        pass
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = PythonExtractor;
+        let classes = ext.find_classes(&tree.root_node(), &source, false);
+        assert_eq!(classes[0].decorators, vec!["@dataclass", "@other(1)"]);
+        let funcs = ext.find_functions(&tree.root_node(), &source, false);
+        let make = funcs.iter().find(|f| f.name == "make").unwrap();
+        assert_eq!(make.decorators, vec!["@staticmethod"]);
+        let plain = funcs.iter().find(|f| f.name == "plain").unwrap();
+        assert!(plain.decorators.is_empty());
     }
 
     #[test]

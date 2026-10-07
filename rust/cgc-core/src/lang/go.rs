@@ -176,13 +176,79 @@ impl GoExtractor {
                 if child.kind() == "parameter_declaration" {
                     let type_node = child.child_by_field_name("type");
                     if let Some(tn) = type_node {
-                        let type_text = get_node_text(&tn, source);
-                        return Some(type_text.trim_start_matches('*').to_string());
+                        // Strip pointer and type parameters: `*List[T]` -> `List`.
+                        return self.base_type_name(&tn, source).or_else(|| {
+                            let type_text = get_node_text(&tn, source);
+                            Some(type_text.trim_start_matches('*').to_string())
+                        });
                     }
                 }
             }
         }
         None
+    }
+
+    /// Bare type name of a type node: `T`, `*T`, `pkg.T`, `T[U]` all yield `T`.
+    fn base_type_name(&self, type_node: &Node, source: &[u8]) -> Option<String> {
+        match type_node.kind() {
+            "type_identifier" => Some(get_node_text(type_node, source).to_string()),
+            "pointer_type" => type_node
+                .named_child(0)
+                .and_then(|inner| self.base_type_name(&inner, source)),
+            "qualified_type" => type_node
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source).to_string()),
+            "generic_type" => type_node
+                .child_by_field_name("type")
+                .and_then(|inner| self.base_type_name(&inner, source)),
+            _ => None,
+        }
+    }
+
+    /// Embedded (anonymous) fields of a struct_type, e.g. `Base`, `*Base`, `pkg.Base`.
+    fn struct_embedded_bases(&self, struct_type: &Node, source: &[u8]) -> Vec<String> {
+        let mut bases = Vec::new();
+        for i in 0..struct_type.named_child_count() {
+            let Some(field_list) = struct_type.named_child(i) else { continue };
+            if field_list.kind() != "field_declaration_list" {
+                continue;
+            }
+            for j in 0..field_list.named_child_count() {
+                let Some(field) = field_list.named_child(j) else { continue };
+                if field.kind() != "field_declaration" || field.child_by_field_name("name").is_some() {
+                    continue;
+                }
+                if let Some(base) = field
+                    .child_by_field_name("type")
+                    .and_then(|t| self.base_type_name(&t, source))
+                {
+                    bases.push(base);
+                }
+            }
+        }
+        bases
+    }
+
+    /// Embedded interfaces of an interface_type, e.g. `io.Reader`, `Closer`.
+    /// Type-set constraints (`~int | string`) and the builtins `any`/`comparable`
+    /// are not inheritance and are skipped.
+    fn interface_embedded_bases(&self, interface_type: &Node, source: &[u8]) -> Vec<String> {
+        let mut bases = Vec::new();
+        for i in 0..interface_type.named_child_count() {
+            let Some(elem) = interface_type.named_child(i) else { continue };
+            if elem.kind() != "type_elem" || elem.named_child_count() != 1 {
+                continue;
+            }
+            if let Some(base) = elem
+                .named_child(0)
+                .and_then(|t| self.base_type_name(&t, source))
+            {
+                if base != "any" && base != "comparable" {
+                    bases.push(base);
+                }
+            }
+        }
+        bases
     }
 
     fn get_docstring(&self, func_node: &Node, source: &[u8]) -> Option<String> {
@@ -382,12 +448,18 @@ impl LanguageExtractor for GoExtractor {
                 None => continue,
             };
             let name = get_node_text(&node, source).to_string();
+            let bases = node
+                .parent()
+                .and_then(|spec| spec.child_by_field_name("type"))
+                .filter(|t| t.kind() == "struct_type")
+                .map(|t| self.struct_embedded_bases(&t, source))
+                .unwrap_or_default();
 
             let mut class = ClassData {
                 name,
                 line_number: type_decl.start_position().row + 1,
                 end_line: type_decl.end_position().row + 1,
-                bases: Vec::new(),
+                bases,
                 context: None,
                 decorators: Vec::new(),
                 lang: self.lang_name().to_string(),
@@ -414,12 +486,18 @@ impl LanguageExtractor for GoExtractor {
                 None => continue,
             };
             let name = get_node_text(&node, source).to_string();
+            let bases = node
+                .parent()
+                .and_then(|spec| spec.child_by_field_name("type"))
+                .filter(|t| t.kind() == "interface_type")
+                .map(|t| self.interface_embedded_bases(&t, source))
+                .unwrap_or_default();
 
             let mut class = ClassData {
                 name,
                 line_number: type_decl.start_position().row + 1,
                 end_line: type_decl.end_position().row + 1,
-                bases: Vec::new(),
+                bases,
                 context: None,
                 decorators: Vec::new(),
                 lang: self.lang_name().to_string(),
@@ -666,6 +744,78 @@ type Speaker interface {
         assert_eq!(classes.len(), 2);
         assert!(classes.iter().any(|c| c.name == "Animal"));
         assert!(classes.iter().any(|c| c.name == "Speaker"));
+    }
+
+    #[test]
+    fn test_struct_embedded_fields_as_bases() {
+        let code = r#"
+package main
+
+type Server struct {
+    Base
+    *Logger
+    http.Handler
+    name string
+    a, b int
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = GoExtractor;
+        let classes = ext.find_classes(&tree.root_node(), &source, false);
+        let server = classes.iter().find(|c| c.name == "Server").unwrap();
+        assert_eq!(server.bases, vec!["Base", "Logger", "Handler"]);
+    }
+
+    #[test]
+    fn test_interface_embedding_as_bases() {
+        let code = r#"
+package main
+
+type ReadCloser interface {
+    io.Reader
+    Closer
+    Extra() int
+}
+
+type Number interface {
+    ~int | ~float64
+}
+
+type Key interface {
+    comparable
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = GoExtractor;
+        let classes = ext.find_classes(&tree.root_node(), &source, false);
+        let rc = classes.iter().find(|c| c.name == "ReadCloser").unwrap();
+        assert_eq!(rc.bases, vec!["Reader", "Closer"]);
+        let num = classes.iter().find(|c| c.name == "Number").unwrap();
+        assert!(num.bases.is_empty());
+        let key = classes.iter().find(|c| c.name == "Key").unwrap();
+        assert!(key.bases.is_empty());
+    }
+
+    #[test]
+    fn test_generic_receiver_strips_type_params() {
+        let code = r#"
+package main
+
+type List[T any] struct {
+    items []T
+}
+
+func (l *List[T]) Push(v T) {}
+
+func (p Pair[K, V]) Key() K { return p.k }
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = GoExtractor;
+        let funcs = ext.find_functions(&tree.root_node(), &source, false);
+        let push = funcs.iter().find(|f| f.name == "Push").unwrap();
+        assert_eq!(push.class_context.as_deref(), Some("List"));
+        let key = funcs.iter().find(|f| f.name == "Key").unwrap();
+        assert_eq!(key.class_context.as_deref(), Some("Pair"));
     }
 
     #[test]
