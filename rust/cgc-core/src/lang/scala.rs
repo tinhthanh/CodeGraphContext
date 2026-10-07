@@ -178,6 +178,7 @@ impl LanguageExtractor for ScalaExtractor {
             let complexity = self.calculate_complexity(&func_node);
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -218,6 +219,7 @@ impl LanguageExtractor for ScalaExtractor {
             );
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: val_node.end_position().row + 1,
@@ -363,6 +365,7 @@ impl LanguageExtractor for ScalaExtractor {
             );
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: get_node_text(&node, source).to_string(),
                 full_name: get_node_text(&full_call_node, source).to_string(),
                 line_number: node.start_position().row + 1,

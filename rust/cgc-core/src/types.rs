@@ -30,6 +30,9 @@ pub struct FunctionData {
     pub is_dependency: bool,
     pub source: Option<String>,
     pub docstring: Option<String>,
+    /// Declared return type, simple name (e.g. `Pet` for `Optional<Pet>`
+    /// is kept as `Optional<Pet>`; the resolver unwraps known wrappers).
+    pub return_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +80,10 @@ pub struct CallData {
     pub line_number: usize,
     pub args: Vec<String>,
     pub inferred_obj_type: Option<String>,
+    /// Member accesses between the receiver root (typed by
+    /// `inferred_obj_type`) and this call, e.g. `repo.findById(id).get().name()`
+    /// → `["findById()", "get()"]`; fields have no parentheses.
+    pub receiver_chain: Vec<String>,
     /// (context_name, context_type, context_line)
     pub context: (Option<String>, Option<String>, Option<usize>),
     /// (class_name, class_type)

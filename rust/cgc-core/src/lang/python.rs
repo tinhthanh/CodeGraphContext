@@ -167,6 +167,7 @@ impl PythonExtractor {
             };
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: assignment_node.end_position().row + 1,
@@ -251,6 +252,7 @@ impl PythonExtractor {
         for (_var, (methods, (context, context_type, context_line))) in dict_assignments {
             for (name, full_name, line_number) in methods {
                 calls.push(CallData {
+                    receiver_chain: Vec::new(),
                     name,
                     full_name,
                     line_number,
@@ -327,6 +329,7 @@ impl LanguageExtractor for PythonExtractor {
             let complexity = self.calculate_complexity(&func_node);
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -573,6 +576,7 @@ impl LanguageExtractor for PythonExtractor {
             let class_ctx = get_parent_context(&node, source, &["class_definition"]);
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: get_node_text(&node, source).to_string(),
                 full_name: get_node_text(&full_call_node, source).to_string(),
                 line_number: node.start_position().row + 1,

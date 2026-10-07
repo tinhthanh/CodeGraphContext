@@ -549,6 +549,7 @@ impl LanguageExtractor for CppExtractor {
             let class_ctx = class_context.or_else(|| self.get_class_context_cpp(&func_node, source));
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -707,6 +708,7 @@ impl LanguageExtractor for CppExtractor {
             let class_context = self.get_class_context_cpp(&node, source);
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: func_name,
                 full_name: raw_text.to_string(),
                 line_number: node.start_position().row + 1,

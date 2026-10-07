@@ -158,6 +158,7 @@ impl LanguageExtractor for HaskellExtractor {
                     let complexity = self.calculate_complexity(&node);
 
                     let mut func = FunctionData {
+                        return_type: None,
                         name: func_name,
                         line_number: node.start_position().row + 1,
                         end_line: node.end_position().row + 1,
@@ -204,6 +205,7 @@ impl LanguageExtractor for HaskellExtractor {
                     );
 
                     let mut func = FunctionData {
+                        return_type: None,
                         name: func_name,
                         line_number: node.start_position().row + 1,
                         end_line: node.end_position().row + 1,
@@ -341,6 +343,7 @@ impl LanguageExtractor for HaskellExtractor {
             );
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: call_name.clone(),
                 full_name: call_name,
                 line_number: node.start_position().row + 1,

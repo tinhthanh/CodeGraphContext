@@ -404,6 +404,7 @@ impl LanguageExtractor for GoExtractor {
             let complexity = self.calculate_go_complexity(func_node, source);
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: func_node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -610,6 +611,7 @@ impl LanguageExtractor for GoExtractor {
             let context = get_parent_context(&node, source, fc_types);
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name,
                 full_name,
                 line_number,

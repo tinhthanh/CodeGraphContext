@@ -517,6 +517,7 @@ impl LanguageExtractor for JavaScriptExtractor {
             };
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: func_node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -754,6 +755,7 @@ impl LanguageExtractor for JavaScriptExtractor {
                 get_parent_context(&node, source, &["class_declaration"]);
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name,
                 full_name,
                 line_number: node.start_position().row + 1,

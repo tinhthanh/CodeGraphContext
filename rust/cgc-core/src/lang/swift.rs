@@ -163,6 +163,7 @@ impl LanguageExtractor for SwiftExtractor {
                     let complexity = self.calculate_complexity(&node);
 
                     let mut func = FunctionData {
+                        return_type: None,
                         name: func_name,
                         line_number: node.start_position().row + 1,
                         end_line: node.end_position().row + 1,
@@ -204,6 +205,7 @@ impl LanguageExtractor for SwiftExtractor {
                     let complexity = self.calculate_complexity(&node);
 
                     let mut func = FunctionData {
+                        return_type: None,
                         name: "init".to_string(),
                         line_number: node.start_position().row + 1,
                         end_line: node.end_position().row + 1,
@@ -355,6 +357,7 @@ impl LanguageExtractor for SwiftExtractor {
             );
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: call_name.clone(),
                 full_name: call_name,
                 line_number: node.start_position().row + 1,
