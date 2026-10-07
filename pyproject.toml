@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "codegraphcontext-rust"
-version = "0.9.21"
+version = "0.9.22"
 description = "Rust-accelerated code indexing engine for CodeGraphContext. 19 languages, 5-18x faster parsing via tree-sitter + rayon."
 authors = [
     { name = "Shashank Shekhar Singh", email = "shashankshekharsingh1205@gmail.com" },
@@ -46,7 +46,10 @@ dependencies = [
     "falkordblite>=0.1.0; sys_platform != 'win32' and python_version >= '3.12'",
     "kuzu>=0.4.0; sys_platform == 'win32' or (sys_platform != 'win32' and python_version >= '3.10' and python_version < '3.12')",
     "fastapi>=0.100.0",
-    "uvicorn>=0.22.0"
+    "uvicorn>=0.22.0",
+    # DuckDB pipeline (cgc-wiki index, DuckDBGraphWriter): bulk loads via Arrow/Parquet
+    "duckdb>=1.0",
+    "pyarrow>=14.0"
 ]
 
 [project.optional-dependencies]
