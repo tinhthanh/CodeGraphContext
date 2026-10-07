@@ -36,6 +36,12 @@ pub struct ResolvedCall {
     pub tier: u8,
     /// EXTRACTED / INFERRED / AMBIGUOUS, derived from `tier`.
     pub confidence: &'static str,
+    /// Class declaring the called method, when resolved through a type.
+    pub called_class: Option<String>,
+    /// Static type the method was looked up on (receiver type, enclosing
+    /// class, or `Type` in `Type.m()`); virtual dispatch can only reach its
+    /// subtypes.
+    pub dispatch_class: Option<String>,
 }
 
 /// Map a resolution tier to upstream's confidence label.
@@ -89,6 +95,8 @@ pub struct TypeIndex {
     methods: HashMap<(String, String), HashSet<String>>,
     /// (type, file) -> base type names
     bases: HashMap<(String, String), Vec<String>>,
+    /// simple base name -> (subtype, file) declaring it as a base
+    subtypes: HashMap<String, Vec<(String, String)>>,
 }
 
 impl TypeIndex {
@@ -102,6 +110,13 @@ impl TypeIndex {
                     index.methods.insert(key.clone(), m.clone());
                 }
                 if let Some(b) = f.class_bases.get(class) {
+                    for base in b {
+                        index
+                            .subtypes
+                            .entry(Self::simple(base).to_string())
+                            .or_default()
+                            .push((class.clone(), f.path.clone()));
+                    }
                     index.bases.insert(key, b.clone());
                 }
             }
@@ -117,7 +132,7 @@ impl TypeIndex {
     /// bases for the nearest type declaring `method`. Returns the declaring
     /// file and the depth (0 = `ty` itself). With `skip_self`, `ty` itself is
     /// not considered (for `super.method()`).
-    pub fn find_method(&self, ty: &str, file: &str, method: &str, skip_self: bool) -> Option<(String, usize)> {
+    pub fn find_method(&self, ty: &str, file: &str, method: &str, skip_self: bool) -> Option<(String, String, usize)> {
         let mut queue = std::collections::VecDeque::new();
         let mut seen = HashSet::new();
         queue.push_back((Self::simple(ty).to_string(), file.to_string(), 0usize));
@@ -129,7 +144,7 @@ impl TypeIndex {
             if !(skip_self && depth == 0)
                 && self.methods.get(&key).map_or(false, |m| m.contains(method))
             {
-                return Some((key.1, depth));
+                return Some((key.0, key.1, depth));
             }
             for base in self.bases.get(&key).into_iter().flatten() {
                 let b = Self::simple(base);
@@ -139,6 +154,26 @@ impl TypeIndex {
             }
         }
         None
+    }
+
+    /// Subtypes (transitively) of `ty` that override `method`: the targets of
+    /// a virtual call through `ty` (interface or base class).
+    pub fn overriding_subtypes(&self, ty: &str, method: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let mut queue: std::collections::VecDeque<String> = [Self::simple(ty).to_string()].into();
+        while let Some(t) = queue.pop_front() {
+            for (sub, file) in self.subtypes.get(&t).into_iter().flatten() {
+                if !seen.insert((sub.clone(), file.clone())) || seen.len() > 200 {
+                    continue;
+                }
+                if self.methods.get(&(sub.clone(), file.clone())).map_or(false, |m| m.contains(method)) {
+                    out.push((sub.clone(), file.clone()));
+                }
+                queue.push_back(sub.clone());
+            }
+        }
+        out
     }
 
     pub fn declares(&self, ty: &str, file: &str) -> bool {
@@ -231,6 +266,8 @@ pub fn resolve_function_call(
     let own = || caller_file_path.to_string();
 
     let mut resolved: Option<(String, u8)> = None;
+    let mut called_class: Option<String> = None;
+    let mut dispatch_class: Option<String> = None;
     let mut is_unresolved_external = false;
 
     // 1. Self/this/super receivers
@@ -240,9 +277,12 @@ pub fn resolve_function_call(
             resolved = Some((own(), 1));
         } else if let Some(cls) = enclosing_class {
             // super.m() → a base class; this.m() not declared here → inherited
-            resolved = types
-                .find_method(cls, caller_file_path, called_name, is_super)
-                .map(|(f, _)| (f, if is_super { 4 } else { 2 }));
+            if let Some((c, f, _)) = types.find_method(cls, caller_file_path, called_name, is_super) {
+                called_class = Some(c);
+                // super.m() is not virtual
+                dispatch_class = (!is_super).then(|| cls.to_string());
+                resolved = Some((f, if is_super { 4 } else { 2 }));
+            }
         }
         if resolved.is_none() {
             resolved = Some((own(), 1));
@@ -253,7 +293,9 @@ pub fn resolve_function_call(
         resolved = Some((own(), 2));
         // Static/qualified call on a local type whose method is inherited
         if qualified_other && types.declares(lookup_name, caller_file_path) {
-            if let Some((f, depth)) = types.find_method(lookup_name, caller_file_path, called_name, false) {
+            if let Some((c, f, depth)) = types.find_method(lookup_name, caller_file_path, called_name, false) {
+                called_class = Some(c);
+                dispatch_class = Some(lookup_name.to_string());
                 if depth > 0 {
                     resolved = Some((f, 4));
                 }
@@ -273,9 +315,12 @@ pub fn resolve_function_call(
         .filter(|_| !is_chained || (is_self_receiver && full_call.matches('.').count() == 2 && !full_call.contains('(')))
     {
         if let Some((type_file, exact)) = locate_type(obj_type, local_imports, imports_map) {
-            resolved = Some(match types.find_method(obj_type, &type_file, called_name, false) {
-                Some((f, 0)) => (f, if exact { 3 } else { 4 }),
-                Some((f, _)) => (f, 4),
+            let found = types.find_method(obj_type, &type_file, called_name, false);
+            called_class = found.as_ref().map(|(c, _, _)| c.clone());
+            dispatch_class = Some(obj_type.rsplit('.').next().unwrap_or(obj_type).to_string());
+            resolved = Some(match found {
+                Some((_, f, 0)) => (f, if exact { 3 } else { 4 }),
+                Some((_, f, _)) => (f, 4),
                 // Declared by a type outside the repo (e.g. JpaRepository.findById):
                 // point at the receiver's type.
                 None => (type_file, 4),
@@ -286,7 +331,9 @@ pub fn resolve_function_call(
     // 3b. Unqualified call inherited from the enclosing class's bases
     if resolved.is_none() && base_obj.is_none() {
         if let Some(cls) = enclosing_class {
-            if let Some((f, _)) = types.find_method(cls, caller_file_path, called_name, true) {
+            if let Some((c, f, _)) = types.find_method(cls, caller_file_path, called_name, true) {
+                called_class = Some(c);
+                dispatch_class = Some(cls.to_string());
                 resolved = Some((f, 2));
             }
         }
@@ -323,7 +370,9 @@ pub fn resolve_function_call(
         if qualified_other {
             if let Some((ref file, _)) = resolved {
                 if types.declares(lookup_name, file) {
-                    if let Some((f, depth)) = types.find_method(lookup_name, file, called_name, false) {
+                    if let Some((c, f, depth)) = types.find_method(lookup_name, file, called_name, false) {
+                        called_class = Some(c);
+                        dispatch_class = Some(lookup_name.to_string());
                         if depth > 0 {
                             resolved = Some((f, 4));
                         }
@@ -406,6 +455,8 @@ pub fn resolve_function_call(
             full_call_name: call.full_name.clone(),
             tier,
             confidence,
+            called_class: called_class.clone(),
+            dispatch_class: dispatch_class.clone(),
         })
     } else {
         Some(ResolvedCall {
@@ -420,6 +471,8 @@ pub fn resolve_function_call(
             full_call_name: call.full_name.clone(),
             tier,
             confidence,
+            called_class: called_class.clone(),
+            dispatch_class: dispatch_class.clone(),
         })
     }
 }
@@ -515,7 +568,7 @@ pub fn build_function_call_groups(
         };
 
         for call in &file_data.calls {
-            let resolved = match resolve_function_call(
+            let first = match resolve_function_call(
                 call,
                 caller_file_path,
                 &local_names_owned,
@@ -527,6 +580,33 @@ pub fn build_function_call_groups(
                 Some(r) => r,
                 None => continue,
             };
+
+            // Virtual dispatch (upstream: Java interface fan-out): a call
+            // resolved to `Iface.m` / `Base.m` also reaches every subtype
+            // overriding `m` in the same language.
+            let mut targets = Vec::new();
+            if matches!(file_data.lang.as_str(), "java" | "kotlin" | "c_sharp" | "scala") {
+                let base = &first;
+                if let Some(cls) = base.dispatch_class.clone() {
+                    let exts = lang_extensions(&file_data.lang);
+                    for (sub, file) in types.overriding_subtypes(&cls, &base.called_name) {
+                        if file == base.called_file_path
+                            || !exts.map_or(true, |e| e.iter().any(|x| file.ends_with(x)))
+                        {
+                            continue;
+                        }
+                        let mut extra = base.clone();
+                        extra.called_file_path = file;
+                        extra.called_class = Some(sub);
+                        extra.tier = 4;
+                        extra.confidence = confidence_label(4, false);
+                        targets.push(extra);
+                    }
+                }
+            }
+            targets.insert(0, first);
+
+            for resolved in targets {
 
             let called_path = &resolved.called_file_path;
             let called_is_class = file_class_lookup
@@ -554,6 +634,7 @@ pub fn build_function_call_groups(
                         (false, false) => groups.fn_to_fn.push(resolved),
                     }
                 }
+            }
             }
         }
     }
@@ -892,5 +973,58 @@ mod tests {
         let call = receiver_call("search", "petService.repo().search", Some("PetService"));
         let r = resolve_function_call(&call, "/r/PetController.java", &HashSet::new(), &HashMap::new(), &imports_map, &types, false);
         assert!(r.map_or(true, |r| r.called_file_path != "/r/BaseCrudService.java"));
+    }
+
+    #[test]
+    fn test_interface_call_fans_out_to_implementations() {
+        let mut ctrl = file("/r/PetController.java", &[("PetController", &["list"], &[])], vec![]);
+        ctrl.calls = vec![receiver_call("findAll", "petService.findAll", Some("PetService"))];
+        ctrl.calls[0].context_name = Some("list".to_string());
+        let files = vec![
+            ctrl,
+            file("/r/PetService.java", &[("PetService", &["findAll"], &[])], vec![]),
+            file("/r/PetServiceImpl.java", &[("PetServiceImpl", &["findAll", "helper"], &["PetService"])], vec![]),
+            file("/r/CachedPetService.java", &[("CachedPetService", &["other"], &["PetServiceImpl"])], vec![]),
+        ];
+        let mut imports_map = HashMap::new();
+        for f in &files {
+            for c in &f.class_names {
+                imports_map.insert(c.clone(), vec![f.path.clone()]);
+            }
+        }
+        let groups = build_function_call_groups(&files, &imports_map, &HashMap::new(), false);
+        let mut targets: Vec<(String, u8)> = groups
+            .fn_to_fn
+            .iter()
+            .map(|r| (r.called_file_path.clone(), r.tier))
+            .collect();
+        targets.sort();
+        // interface method (tier 3) + the one implementation overriding it (tier 4);
+        // CachedPetService doesn't override findAll, so no edge to it
+        assert_eq!(targets, vec![("/r/PetService.java".to_string(), 3), ("/r/PetServiceImpl.java".to_string(), 4)]);
+    }
+
+    #[test]
+    fn test_fan_out_starts_from_receiver_type_not_declaring_class() {
+        // lot.isActive() with `StockLot lot`: isActive is inherited from
+        // Entity; Pet (a sibling) overriding it must not be a target.
+        let mut caller = file("/r/T.java", &[("T", &["run"], &[])], vec![]);
+        caller.calls = vec![receiver_call("isActive", "lot.isActive", Some("StockLot"))];
+        caller.calls[0].context_name = Some("run".to_string());
+        let files = vec![
+            caller,
+            file("/r/Entity.java", &[("Entity", &["isActive"], &[])], vec![]),
+            file("/r/StockLot.java", &[("StockLot", &["qty"], &["Entity"])], vec![]),
+            file("/r/Pet.java", &[("Pet", &["isActive"], &["Entity"])], vec![]),
+        ];
+        let mut imports_map = HashMap::new();
+        for f in &files {
+            for c in &f.class_names {
+                imports_map.insert(c.clone(), vec![f.path.clone()]);
+            }
+        }
+        let groups = build_function_call_groups(&files, &imports_map, &HashMap::new(), false);
+        let targets: Vec<&str> = groups.fn_to_fn.iter().map(|r| r.called_file_path.as_str()).collect();
+        assert_eq!(targets, vec!["/r/Entity.java"]);
     }
 }
