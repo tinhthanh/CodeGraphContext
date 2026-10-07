@@ -285,6 +285,38 @@ impl JavaExtractor {
         None
     }
 
+    /// Resolve `this.<var>` to a field's declared type, searching only the
+    /// enclosing type declarations (innermost first).
+    fn lookup_field_type(
+        node: &Node,
+        var: &str,
+        typed: &HashMap<(usize, String), String>,
+    ) -> Option<String> {
+        let mut curr = node.parent();
+        while let Some(p) = curr {
+            if TYPE_DECL_KINDS.contains(&p.kind()) {
+                if let Some(t) = typed.get(&(p.start_byte(), var.to_string())) {
+                    return Some(t.clone());
+                }
+            }
+            curr = p.parent();
+        }
+        None
+    }
+
+    /// Simple type name of a constructor call's type node:
+    /// `Box<String>` → `Box`, `a.b.Foo` → `Foo`, `ArrayList<>` → `ArrayList`.
+    fn constructor_name(type_node: &Node, source: &[u8]) -> String {
+        let raw = if type_node.kind() == "generic_type" {
+            type_node.child(0).unwrap_or(*type_node)
+        } else {
+            *type_node
+        };
+        let text = get_node_text(&raw, source);
+        let text = text.split('<').next().unwrap_or(text);
+        text.rsplit('.').next().unwrap_or(text).trim().to_string()
+    }
+
     /// Extract parameter names from a formal_parameters text like "(int x, String name)"
     fn extract_parameter_names(&self, params_text: &str) -> Vec<String> {
         let mut params = Vec::new();
@@ -474,10 +506,11 @@ impl LanguageExtractor for JavaExtractor {
             let trimmed = import_text.trim();
             let path = if let Some(rest) = trimmed.strip_prefix("import") {
                 let rest = rest.trim();
-                let rest = if let Some(r) = rest.strip_prefix("static") {
-                    r.trim()
-                } else {
-                    rest
+                // `static` is a keyword only when followed by whitespace
+                // (a package may be named e.g. `staticfoo`).
+                let rest = match rest.strip_prefix("static") {
+                    Some(r) if r.starts_with(char::is_whitespace) => r.trim(),
+                    _ => rest,
                 };
                 rest.trim_end_matches(';').trim().to_string()
             } else {
@@ -512,10 +545,15 @@ impl LanguageExtractor for JavaExtractor {
                 continue;
             }
 
-            let call_name = get_node_text(&node, source).to_string();
+            let call_text = get_node_text(&node, source);
+            let call_name = if node.parent().map(|p| p.kind()) == Some("object_creation_expression") {
+                Self::constructor_name(&node, source)
+            } else {
+                call_text.to_string()
+            };
             let line_number = node.start_position().row + 1;
 
-            let call_key = format!("{}_{}", call_name, line_number);
+            let call_key = format!("{}_{}", call_text, line_number);
             if seen_calls.contains(&call_key) {
                 continue;
             }
@@ -567,12 +605,19 @@ impl LanguageExtractor for JavaExtractor {
                     // Resolve the receiver variable to its declared type when
                     // known; otherwise keep the identifier (e.g. a static
                     // `Foo.bar()` call, where the identifier is the type).
-                    let base_obj = obj_text.split('.').next().unwrap_or(obj_text);
+                    // `this.repo.save()` → the receiver is the field `repo`.
+                    let (field_only, obj_rest) = match obj_text.strip_prefix("this.") {
+                        Some(rest) => (true, rest),
+                        None => (false, obj_text),
+                    };
+                    let base_obj = obj_rest.split('.').next().unwrap_or(obj_rest);
                     if !base_obj.contains('(') {
-                        inferred_obj_type = Some(
+                        let resolved = if field_only {
+                            Self::lookup_field_type(&node, base_obj, &typed_names)
+                        } else {
                             Self::lookup_receiver_type(&node, base_obj, &typed_names)
-                                .unwrap_or_else(|| base_obj.to_string()),
-                        );
+                        };
+                        inferred_obj_type = Some(resolved.unwrap_or_else(|| base_obj.to_string()));
                     }
                 }
             } else if call_node.kind() == "object_creation_expression" {
@@ -855,5 +900,53 @@ public record Point(int x) implements Comparable<Point> {
         assert_eq!(bases("OrderController"), vec!["BaseCrudController", "Auditable", "a.b.Traceable"]);
         assert_eq!(bases("SettingRepository"), vec!["TenantAwareRepository", "Searchable"]);
         assert_eq!(bases("Point"), vec!["Comparable"]);
+    }
+
+    #[test]
+    fn test_this_field_receiver_type() {
+        let code = r#"
+public class OrderService {
+    private final OrderRepository repo;
+    public void save(Order repo) {
+        this.repo.save(repo);
+    }
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = JavaExtractor.find_calls(&tree.root_node(), &source);
+        let save = calls.iter().find(|c| c.full_name == "this.repo.save").unwrap();
+        // The field type wins over the same-named parameter.
+        assert_eq!(save.inferred_obj_type.as_deref(), Some("OrderRepository"));
+    }
+
+    #[test]
+    fn test_static_import_requires_keyword() {
+        let code = r#"
+import static a.B.c;
+import staticfoo.Bar;
+"#;
+        let (tree, source) = parse_source(code);
+        let imports = JavaExtractor.find_imports(&tree.root_node(), &source);
+        let names: Vec<_> = imports.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["a.B.c", "staticfoo.Bar"]);
+    }
+
+    #[test]
+    fn test_constructor_call_simple_name() {
+        let code = r#"
+public class Main {
+    public void run() {
+        Box<String> b = new Box<String>();
+        List<String> l = new ArrayList<>();
+        Object f = new a.b.Foo();
+    }
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = JavaExtractor.find_calls(&tree.root_node(), &source);
+        let full = |n: &str| calls.iter().find(|c| c.name == n).unwrap().full_name.clone();
+        assert_eq!(full("Box"), "Box<String>");
+        assert_eq!(full("ArrayList"), "ArrayList<>");
+        assert_eq!(full("Foo"), "a.b.Foo");
     }
 }

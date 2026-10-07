@@ -56,6 +56,10 @@ const QUERY_VARIABLES: &str = r#"
     ) @variable
 "#;
 
+const QUERY_CLASS_PARAMS: &str = r#"
+    (class_parameter) @param
+"#;
+
 const QUERY_PRE_SCAN: &str = r#"
     (class_declaration name: (identifier) @name)
     (object_declaration name: (identifier) @name)
@@ -90,6 +94,61 @@ impl KotlinExtractor {
         results
     }
 
+    /// Line of a declaration's name: an annotated declaration starts at its
+    /// annotation, but functions/classes are reported at their name line, and
+    /// calls' context lines must match that (upstream #1660).
+    fn name_line(decl: &Node) -> usize {
+        decl.child_by_field_name("name")
+            .unwrap_or(*decl)
+            .start_position()
+            .row
+            + 1
+    }
+
+    /// Supertypes listed in a class/object `delegation_specifiers` node, with
+    /// generic arguments dropped: `: B(), I<T>, a.b.C<X>` → `B`, `I`, `a.b.C`.
+    fn delegation_bases(decl: &Node, source: &[u8]) -> Vec<String> {
+        let mut bases = Vec::new();
+        let Some(specs) = (0..decl.child_count())
+            .filter_map(|i| decl.child(i))
+            .find(|c| c.kind() == "delegation_specifiers")
+        else {
+            return bases;
+        };
+        for i in 0..specs.child_count() {
+            let Some(spec) = specs.child(i) else { continue };
+            if spec.kind() != "delegation_specifier" {
+                continue;
+            }
+            for j in 0..spec.child_count() {
+                let Some(item) = spec.child(j) else { continue };
+                // `B()` (constructor_invocation) and `I by impl`
+                // (explicit_delegation) wrap the user_type; `I` is bare.
+                let user_type = match item.kind() {
+                    "user_type" => Some(item),
+                    "constructor_invocation" | "explicit_delegation" => (0..item.child_count())
+                        .filter_map(|k| item.child(k))
+                        .find(|c| c.kind() == "user_type"),
+                    _ => None,
+                };
+                if let Some(ut) = user_type {
+                    let text = get_node_text(&ut, source);
+                    let base: String = text
+                        .split('<')
+                        .next()
+                        .unwrap_or(text)
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect();
+                    if !base.is_empty() {
+                        bases.push(base);
+                    }
+                }
+            }
+        }
+        bases
+    }
+
     fn get_parent_context_kotlin(
         &self,
         node: &Node,
@@ -112,7 +171,7 @@ impl KotlinExtractor {
                     return (
                         name,
                         Some(parent.kind().to_string()),
-                        Some(parent.start_position().row + 1),
+                        Some(Self::name_line(&parent)),
                     );
                 }
                 "class_declaration" | "object_declaration" => {
@@ -130,7 +189,7 @@ impl KotlinExtractor {
                     return (
                         name,
                         Some(parent.kind().to_string()),
-                        Some(parent.start_position().row + 1),
+                        Some(Self::name_line(&parent)),
                     );
                 }
                 "companion_object" => {
@@ -359,39 +418,13 @@ impl LanguageExtractor for KotlinExtractor {
 
             let name = get_node_text(&node, source).to_string();
 
-            // Extract bases from delegation_specifier children
-            let mut bases = Vec::new();
-            for i in 0..class_node.child_count() {
-                if let Some(child) = class_node.child(i) {
-                    if child.kind() == "delegation_specifier" {
-                        for j in 0..child.child_count() {
-                            if let Some(spec) = child.child(j) {
-                                if spec.kind() == "constructor_invocation" {
-                                    for k in 0..spec.child_count() {
-                                        if let Some(sub) = spec.child(k) {
-                                            if sub.kind() == "user_type" {
-                                                bases.push(
-                                                    get_node_text(&sub, source)
-                                                        .to_string(),
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } else if spec.kind() == "user_type" {
-                                    bases.push(get_node_text(&spec, source).to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            let bases = Self::delegation_bases(&class_node, source);
 
             let (context, _, _) = self.get_parent_context_kotlin(&class_node, source);
 
             let mut class = ClassData {
                 name,
-                line_number: class_node.start_position().row + 1,
+                line_number: Self::name_line(&class_node),
                 end_line: class_node.end_position().row + 1,
                 bases,
                 context,
@@ -429,9 +462,9 @@ impl LanguageExtractor for KotlinExtractor {
 
             let mut class = ClassData {
                 name,
-                line_number: obj_node.start_position().row + 1,
+                line_number: Self::name_line(&obj_node),
                 end_line: obj_node.end_position().row + 1,
-                bases: Vec::new(),
+                bases: Self::delegation_bases(&obj_node, source),
                 context: None,
                 decorators: Vec::new(),
                 lang: self.lang_name().to_string(),
@@ -644,6 +677,41 @@ impl LanguageExtractor for KotlinExtractor {
             });
         }
 
+        // Constructor properties: `class Svc(private val repo: Repo)`.
+        for (node, _) in self.execute_query(QUERY_CLASS_PARAMS, root, source) {
+            let children: Vec<Node> =
+                (0..node.child_count()).filter_map(|i| node.child(i)).collect();
+            if !children.iter().any(|c| c.kind() == "val" || c.kind() == "var") {
+                continue; // plain constructor parameter, not a property
+            }
+            let Some(name_node) = children.iter().find(|c| c.kind() == "identifier") else {
+                continue;
+            };
+            let type_annotation = children
+                .iter()
+                .find(|c| matches!(c.kind(), "user_type" | "nullable_type" | "function_type"))
+                .map(|t| get_node_text(t, source).to_string());
+            let value = children
+                .iter()
+                .position(|c| c.kind() == "=")
+                .and_then(|i| children.get(i + 1))
+                .map(|v| get_node_text(v, source).to_string());
+
+            let (context, _, _) = self.get_parent_context_kotlin(&node, source);
+            let class_context = self.get_class_context_kotlin(&node, source);
+
+            variables.push(VariableData {
+                name: get_node_text(name_node, source).to_string(),
+                line_number: name_node.start_position().row + 1,
+                value,
+                type_annotation,
+                context,
+                class_context,
+                lang: self.lang_name().to_string(),
+                is_dependency: false,
+            });
+        }
+
         variables
     }
 
@@ -784,5 +852,68 @@ fun complex(x: Int): Int {
         assert_eq!(funcs.len(), 1);
         // base 1 + if + for + when = at least 4
         assert!(funcs[0].cyclomatic_complexity >= 3);
+    }
+
+    #[test]
+    fn test_class_and_object_bases() {
+        let code = r#"
+class A<T> : B(), I<T>, a.b.C<String>, D by impl {
+}
+object X : Y
+interface Q : P<Int>
+class Plain
+"#;
+        let (tree, source) = parse_source(code);
+        let classes = KotlinExtractor.find_classes(&tree.root_node(), &source, false);
+        let bases = |n: &str| classes.iter().find(|c| c.name == n).unwrap().bases.clone();
+        assert_eq!(bases("A"), vec!["B", "I", "a.b.C", "D"]);
+        assert_eq!(bases("X"), vec!["Y"]);
+        assert_eq!(bases("Q"), vec!["P"]);
+        assert!(bases("Plain").is_empty());
+    }
+
+    #[test]
+    fn test_annotated_call_context_matches_function_line() {
+        let code = r#"
+@Composable
+fun Screen() {
+    render()
+}
+
+@Serializable
+class Model {
+    @Test
+    fun check() { verify() }
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = KotlinExtractor;
+        let funcs = ext.find_functions(&tree.root_node(), &source, false);
+        let calls = ext.find_calls(&tree.root_node(), &source);
+        for (func, call) in [("Screen", "render"), ("check", "verify")] {
+            let f = funcs.iter().find(|f| f.name == func).unwrap();
+            let c = calls.iter().find(|c| c.name == call).unwrap();
+            assert_eq!(c.context.0.as_deref(), Some(func));
+            assert_eq!(c.context.2, Some(f.line_number));
+        }
+        let classes = ext.find_classes(&tree.root_node(), &source, false);
+        assert_eq!(classes.iter().find(|c| c.name == "Model").unwrap().line_number, 8);
+    }
+
+    #[test]
+    fn test_constructor_properties_are_variables() {
+        let code = r#"
+class Svc(private val repo: Repo, var limit: Int = 10, plain: String) {
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let vars = KotlinExtractor.find_variables(&tree.root_node(), &source);
+        let repo = vars.iter().find(|v| v.name == "repo").unwrap();
+        assert_eq!(repo.type_annotation.as_deref(), Some("Repo"));
+        assert_eq!(repo.class_context.as_deref(), Some("Svc"));
+        let limit = vars.iter().find(|v| v.name == "limit").unwrap();
+        assert_eq!(limit.type_annotation.as_deref(), Some("Int"));
+        assert_eq!(limit.value.as_deref(), Some("10"));
+        assert!(!vars.iter().any(|v| v.name == "plain"));
     }
 }
