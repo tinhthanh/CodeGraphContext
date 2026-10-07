@@ -209,27 +209,42 @@ fn py_dict_to_file_call_data(fd: &Bound<'_, PyDict>) -> PyResult<FileCallData> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| path.clone());
 
-    // Function names
+    // Function names, and methods grouped by their declaring class
     let mut function_names = HashSet::new();
+    let mut class_methods: HashMap<String, HashSet<String>> = HashMap::new();
     if let Some(funcs) = fd.get_item("functions")? {
         let funcs_list: &Bound<'_, PyList> = funcs.downcast()?;
         for f in funcs_list.iter() {
             let f_dict: &Bound<'_, PyDict> = f.downcast()?;
             if let Some(name) = f_dict.get_item("name")? {
                 let n: String = name.extract()?;
+                let class_ctx: Option<String> = f_dict
+                    .get_item("class_context")?
+                    .and_then(|v| v.extract().ok());
+                if let Some(cls) = class_ctx {
+                    class_methods.entry(cls).or_default().insert(n.clone());
+                }
                 function_names.insert(n);
             }
         }
     }
 
-    // Class names
+    // Class names and their base types
     let mut class_names = HashSet::new();
+    let mut class_bases: HashMap<String, Vec<String>> = HashMap::new();
     if let Some(classes) = fd.get_item("classes")? {
         let classes_list: &Bound<'_, PyList> = classes.downcast()?;
         for c in classes_list.iter() {
             let c_dict: &Bound<'_, PyDict> = c.downcast()?;
             if let Some(name) = c_dict.get_item("name")? {
                 let n: String = name.extract()?;
+                let bases: Vec<String> = c_dict
+                    .get_item("bases")?
+                    .and_then(|v| v.extract().ok())
+                    .unwrap_or_default();
+                if !bases.is_empty() {
+                    class_bases.insert(n.clone(), bases);
+                }
                 class_names.insert(n);
             }
         }
@@ -273,6 +288,8 @@ fn py_dict_to_file_call_data(fd: &Bound<'_, PyDict>) -> PyResult<FileCallData> {
         class_names,
         local_imports,
         calls,
+        class_methods,
+        class_bases,
     })
 }
 
@@ -422,6 +439,8 @@ fn resolved_call_to_py(py: Python<'_>, r: &ResolvedCall) -> PyResult<PyObject> {
     d.set_item("line_number", r.line_number)?;
     d.set_item("args", &r.args)?;
     d.set_item("full_call_name", &r.full_call_name)?;
+    d.set_item("resolution_tier", r.tier)?;
+    d.set_item("confidence", r.confidence)?;
     Ok(d.into_any().unbind())
 }
 
