@@ -351,7 +351,11 @@ def extract_routes(
                         })
 
         # ── Decorator-based routes (read from decorators on functions) ──
-        for fn in file_data.get("functions", []):
+        # Java/Kotlin annotations also land in `decorators`, but Spring routes
+        # need the class-level @RequestMapping prefix: the source scan below
+        # handles them, so skip them here to avoid duplicate/unprefixed routes.
+        decorated_fns = [] if lang in ("java", "kotlin") else file_data.get("functions", [])
+        for fn in decorated_fns:
             decorators = fn.get("decorators", []) or []
             for dec in decorators:
                 dec_str = str(dec)
