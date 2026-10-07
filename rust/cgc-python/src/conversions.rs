@@ -57,6 +57,13 @@ fn file_data_to_py(py: Python<'_>, data: &FileData) -> PyResult<PyObject> {
         .collect::<PyResult<_>>()?;
     dict.set_item("function_calls", calls)?;
 
+    let injections: Vec<PyObject> = data
+        .injections
+        .iter()
+        .map(|inj| injection_to_py(py, inj))
+        .collect::<PyResult<_>>()?;
+    dict.set_item("injections", injections)?;
+
     Ok(dict.into_any().unbind())
 }
 
@@ -170,5 +177,16 @@ fn call_to_py(py: Python<'_>, c: &CallData) -> PyResult<PyObject> {
         dict.set_item("is_indirect_call", true)?;
     }
 
+    Ok(dict.into_any().unbind())
+}
+
+fn injection_to_py(py: Python<'_>, inj: &InjectionData) -> PyResult<PyObject> {
+    let dict = PyDict::new(py);
+    dict.set_item("injector_class", &inj.injector_class)?;
+    dict.set_item("injected_type", &inj.injected_type)?;
+    dict.set_item("field_name", &inj.field_name)?;
+    dict.set_item("line_number", inj.line_number)?;
+    dict.set_item("kind", &inj.kind)?;
+    dict.set_item("stereotype", &inj.stereotype)?;
     Ok(dict.into_any().unbind())
 }

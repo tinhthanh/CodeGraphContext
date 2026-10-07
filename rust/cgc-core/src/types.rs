@@ -9,6 +9,8 @@ pub struct FileData {
     pub variables: Vec<VariableData>,
     pub imports: Vec<ImportData>,
     pub function_calls: Vec<CallData>,
+    /// Dependency-injection points (Spring beans injected into a class).
+    pub injections: Vec<InjectionData>,
     pub is_dependency: bool,
     pub lang: String,
 }
@@ -89,4 +91,23 @@ pub struct CallData {
 pub enum ParseResult {
     Ok(FileData),
     Err { path: String, error: String },
+}
+
+/// A dependency injected into a class (Spring field, Lombok-generated or
+/// explicit constructor injection).
+#[derive(Debug, Clone)]
+pub struct InjectionData {
+    /// Class receiving the dependency
+    pub injector_class: String,
+    /// Simple type name of the injected bean (collection element type for
+    /// `List<Handler>`-style injection)
+    pub injected_type: String,
+    /// Field or constructor parameter name
+    pub field_name: String,
+    pub line_number: usize,
+    /// "field" (@Autowired/@Inject/@Resource), "lombok" (final field +
+    /// @RequiredArgsConstructor/@AllArgsConstructor) or "constructor"
+    pub kind: String,
+    /// Spring stereotype of the injector (Service, RestController, ...), if any
+    pub stereotype: Option<String>,
 }
