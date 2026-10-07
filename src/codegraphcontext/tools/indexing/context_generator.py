@@ -122,7 +122,7 @@ def generate_module_contexts(
                     "caller_file": caller_path,
                     "called_name": e.get("called_name", ""),
                     "called_file": called_path,
-                    "confidence": "EXTRACTED" if same_file else "INFERRED",
+                    "confidence": e.get("confidence") or ("EXTRACTED" if same_file else "INFERRED"),
                 })
 
     # Normalize route paths
@@ -322,21 +322,21 @@ def generate_module_contexts(
         if outgoing:
             lines.append("**Outgoing (this module calls):**")
             seen = set()
-            for e in outgoing[:15]:
+            for e in [x for x in outgoing if x.get("confidence") != "AMBIGUOUS"][:15]:
                 key = f"{e['caller_name']}→{e['called_name']}"
                 if key not in seen:
                     seen.add(key)
-                    lines.append(f"  {e['caller_name']} → {e['called_name']} (`{e['called_file']}`) [INFERRED]")
+                    lines.append(f"  {e['caller_name']} → {e['called_name']} (`{e['called_file']}`) [{e.get('confidence', 'INFERRED')}]")
             lines.append("")
 
         if incoming:
             lines.append("**Incoming (called by other modules):**")
             seen = set()
-            for e in incoming[:15]:
+            for e in [x for x in incoming if x.get("confidence") != "AMBIGUOUS"][:15]:
                 key = f"{e['caller_name']}→{e['called_name']}"
                 if key not in seen:
                     seen.add(key)
-                    lines.append(f"  {e['caller_name']} (`{e['caller_file']}`) → {e['called_name']} [INFERRED]")
+                    lines.append(f"  {e['caller_name']} (`{e['caller_file']}`) → {e['called_name']} [{e.get('confidence', 'INFERRED')}]")
             lines.append("")
 
         # ── Execution Flows ─────────────────────────────────────
@@ -419,7 +419,7 @@ def generate_module_contexts(
             "5. **Design Decisions** — include rationale from source comments",
             "6. **Dependencies** — what this module depends on and what depends on it",
             "",
-            "Use confidence tags: EXTRACTED = certain (AST), INFERRED = cross-file resolution.",
+            "Use confidence tags: EXTRACTED = certain (same file, explicit import or enclosing class), INFERRED = resolved via the receiver's type or inheritance. AMBIGUOUS edges are omitted.",
             "When mentioning another module, use: [[module-slug]]",
         ])
 

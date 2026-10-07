@@ -28,6 +28,25 @@ pub struct ResolvedCall {
     pub line_number: usize,
     pub args: Vec<String>,
     pub full_call_name: String,
+    /// Resolution tier, same scheme as upstream CGC (`resolution/calls.py`):
+    /// 1 self receiver, 2 same file / enclosing class hierarchy,
+    /// 3 receiver type resolved exactly, 4 receiver type by short name or via
+    /// bases, 5 unique repo-wide name, 6 explicit import, 7 import path
+    /// substring, 8 first of several candidates, 9 unresolved (caller file).
+    pub tier: u8,
+    /// EXTRACTED / INFERRED / AMBIGUOUS, derived from `tier`.
+    pub confidence: &'static str,
+}
+
+/// Map a resolution tier to upstream's confidence label.
+pub fn confidence_label(tier: u8, unresolved_external: bool) -> &'static str {
+    if unresolved_external || tier >= 8 {
+        "AMBIGUOUS"
+    } else if matches!(tier, 1 | 2 | 5 | 6) {
+        "EXTRACTED"
+    } else {
+        "INFERRED"
+    }
 }
 
 /// Input call data (mirrors the dict from parsing).
@@ -52,6 +71,79 @@ pub struct FileCallData {
     pub class_names: HashSet<String>,
     pub local_imports: HashMap<String, String>, // alias/short_name -> full_import_name
     pub calls: Vec<CallInput>,
+    /// class name -> names of the methods it declares (this file only)
+    pub class_methods: HashMap<String, HashSet<String>>,
+    /// class name -> base type names (simple names)
+    pub class_bases: HashMap<String, Vec<String>>,
+}
+
+/// Repo-wide view of types, their methods and bases, used to resolve
+/// `receiver.method()` to the class that actually declares `method`
+/// (walking up the inheritance chain), like upstream's
+/// `method_target_for_type`.
+#[derive(Debug, Default)]
+pub struct TypeIndex {
+    /// simple type name -> files declaring it
+    files: HashMap<String, Vec<String>>,
+    /// (type, file) -> declared method names
+    methods: HashMap<(String, String), HashSet<String>>,
+    /// (type, file) -> base type names
+    bases: HashMap<(String, String), Vec<String>>,
+}
+
+impl TypeIndex {
+    pub fn build(all_files: &[FileCallData]) -> Self {
+        let mut index = TypeIndex::default();
+        for f in all_files {
+            for class in &f.class_names {
+                index.files.entry(class.clone()).or_default().push(f.path.clone());
+                let key = (class.clone(), f.path.clone());
+                if let Some(m) = f.class_methods.get(class) {
+                    index.methods.insert(key.clone(), m.clone());
+                }
+                if let Some(b) = f.class_bases.get(class) {
+                    index.bases.insert(key, b.clone());
+                }
+            }
+        }
+        index
+    }
+
+    fn simple(name: &str) -> &str {
+        name.rsplit('.').next().unwrap_or(name)
+    }
+
+    /// Breadth-first search from `ty` (declared in `file`) up through its
+    /// bases for the nearest type declaring `method`. Returns the declaring
+    /// file and the depth (0 = `ty` itself). With `skip_self`, `ty` itself is
+    /// not considered (for `super.method()`).
+    pub fn find_method(&self, ty: &str, file: &str, method: &str, skip_self: bool) -> Option<(String, usize)> {
+        let mut queue = std::collections::VecDeque::new();
+        let mut seen = HashSet::new();
+        queue.push_back((Self::simple(ty).to_string(), file.to_string(), 0usize));
+        while let Some((t, f, depth)) = queue.pop_front() {
+            if depth > 12 || !seen.insert((t.clone(), f.clone())) {
+                continue;
+            }
+            let key = (t, f);
+            if !(skip_self && depth == 0)
+                && self.methods.get(&key).map_or(false, |m| m.contains(method))
+            {
+                return Some((key.1, depth));
+            }
+            for base in self.bases.get(&key).into_iter().flatten() {
+                let b = Self::simple(base);
+                for bf in self.files.get(b).into_iter().flatten() {
+                    queue.push_back((b.to_string(), bf.clone(), depth + 1));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn declares(&self, ty: &str, file: &str) -> bool {
+        self.files.get(Self::simple(ty)).map_or(false, |fs| fs.iter().any(|f| f == file))
+    }
 }
 
 /// The 6-category output of call resolution.
@@ -65,6 +157,28 @@ pub struct CallGroups {
     pub file_to_cls: Vec<ResolvedCall>,
 }
 
+/// Locate the file declaring type `ty`. Returns (file, exact): exact when
+/// the type maps to a single file or an explicit import disambiguates it.
+fn locate_type(
+    ty: &str,
+    local_imports: &HashMap<String, String>,
+    imports_map: &HashMap<String, Vec<String>>,
+) -> Option<(String, bool)> {
+    let simple = ty.rsplit('.').next().unwrap_or(ty);
+    let paths = imports_map.get(simple).filter(|p| !p.is_empty())?;
+    if paths.len() == 1 {
+        return Some((paths[0].clone(), true));
+    }
+    let full = local_imports.get(simple).map(|s| s.as_str()).unwrap_or(ty);
+    if full.contains('.') {
+        let import_path = full.replace('.', "/");
+        if let Some(p) = paths.iter().find(|p| p.contains(&import_path)) {
+            return Some((p.clone(), true));
+        }
+    }
+    Some((paths[0].clone(), false))
+}
+
 /// Resolve a single function call to its target.
 pub fn resolve_function_call(
     call: &CallInput,
@@ -72,16 +186,20 @@ pub fn resolve_function_call(
     local_names: &HashSet<String>,
     local_imports: &HashMap<String, String>,
     imports_map: &HashMap<String, Vec<String>>,
+    types: &TypeIndex,
     skip_external: bool,
 ) -> Option<ResolvedCall> {
     let called_name = &call.name;
+    let full_call = &call.full_name;
 
-    // Skip Python builtins
-    if PYTHON_BUILTINS.contains(&called_name.as_str()) {
+    // Skip Python builtins: only unqualified calls from Python files.
+    // `len(x)` is a builtin; `repo.all()` / `service.list()` — or any call
+    // from another language — is a regular method call.
+    let is_python = caller_file_path.ends_with(".py") || caller_file_path.ends_with(".pyi");
+    if is_python && !full_call.contains('.') && PYTHON_BUILTINS.contains(&called_name.as_str()) {
         return None;
     }
 
-    let full_call = &call.full_name;
     let base_obj = if full_call.contains('.') {
         Some(full_call.split('.').next().unwrap_or(""))
     } else {
@@ -90,8 +208,9 @@ pub fn resolve_function_call(
 
     let is_chained = full_call.matches('.').count() > 1;
     let self_receivers = ["self", "this", "super", "super()", "cls", "@"];
+    let is_self_receiver = base_obj.map_or(false, |b| self_receivers.contains(&b));
 
-    let lookup_name = if is_chained && base_obj.map_or(false, |b| self_receivers.contains(&b)) {
+    let lookup_name = if is_chained && is_self_receiver {
         called_name.as_str()
     } else {
         base_obj.unwrap_or(called_name.as_str())
@@ -105,50 +224,108 @@ pub fn resolve_function_call(
     let external_receiver_type = qualified_other
         && call.inferred_obj_type.as_deref().map_or(false, |t| {
             t.starts_with(|c: char| c.is_ascii_uppercase())
-                && !imports_map.contains_key(t)
+                && !imports_map.contains_key(t.rsplit('.').next().unwrap_or(t))
                 && !local_names.contains(t)
         });
+    let enclosing_class = call.class_context_name.as_deref();
+    let own = || caller_file_path.to_string();
 
-    let mut resolved_path: Option<String> = None;
+    let mut resolved: Option<(String, u8)> = None;
     let mut is_unresolved_external = false;
 
     // 1. Self/this/super receivers
-    if base_obj.map_or(false, |b| self_receivers.contains(&b)) && !is_chained {
-        resolved_path = Some(caller_file_path.to_string());
+    if is_self_receiver && !is_chained {
+        let is_super = matches!(base_obj, Some("super") | Some("super()"));
+        if !is_super && local_names.contains(called_name.as_str()) {
+            resolved = Some((own(), 1));
+        } else if let Some(cls) = enclosing_class {
+            // super.m() → a base class; this.m() not declared here → inherited
+            resolved = types
+                .find_method(cls, caller_file_path, called_name, is_super)
+                .map(|(f, _)| (f, if is_super { 4 } else { 2 }));
+        }
+        if resolved.is_none() {
+            resolved = Some((own(), 1));
+        }
     }
     // 2. Local definitions
     else if local_names.contains(lookup_name) {
-        resolved_path = Some(caller_file_path.to_string());
+        resolved = Some((own(), 2));
+        // Static/qualified call on a local type whose method is inherited
+        if qualified_other && types.declares(lookup_name, caller_file_path) {
+            if let Some((f, depth)) = types.find_method(lookup_name, caller_file_path, called_name, false) {
+                if depth > 0 {
+                    resolved = Some((f, 4));
+                }
+            }
+        }
     }
-    // 3. Inferred object type
-    else if let Some(ref obj_type) = call.inferred_obj_type {
-        if let Some(paths) = imports_map.get(obj_type.as_str()) {
-            if !paths.is_empty() {
-                resolved_path = Some(paths[0].clone());
+    // 3. Inferred receiver type: the class declaring the method, walking bases.
+    // Extractors fall back to the receiver *variable* name when the type is
+    // unknown (`var list = ...`); only capitalised names are treated as types.
+    // The type describes the *first* receiver segment, so it only applies to
+    // `recv.m()` and `this.field.m()`, not to chains like `a.b.m()` / `a.b().m()`
+    // (those would need member/return types, which extractors don't emit yet).
+    else if let Some(obj_type) = call
+        .inferred_obj_type
+        .as_ref()
+        .filter(|t| t.rsplit('.').next().map_or(false, |s| s.starts_with(|c: char| c.is_ascii_uppercase())))
+        .filter(|_| !is_chained || (is_self_receiver && full_call.matches('.').count() == 2 && !full_call.contains('(')))
+    {
+        if let Some((type_file, exact)) = locate_type(obj_type, local_imports, imports_map) {
+            resolved = Some(match types.find_method(obj_type, &type_file, called_name, false) {
+                Some((f, 0)) => (f, if exact { 3 } else { 4 }),
+                Some((f, _)) => (f, 4),
+                // Declared by a type outside the repo (e.g. JpaRepository.findById):
+                // point at the receiver's type.
+                None => (type_file, 4),
+            });
+        }
+    }
+
+    // 3b. Unqualified call inherited from the enclosing class's bases
+    if resolved.is_none() && base_obj.is_none() {
+        if let Some(cls) = enclosing_class {
+            if let Some((f, _)) = types.find_method(cls, caller_file_path, called_name, true) {
+                resolved = Some((f, 2));
             }
         }
     }
 
-    // 4. Lookup in imports_map
-    if resolved_path.is_none() {
+    // 4. Lookup in imports_map. For `recv.m()` this is only meaningful when
+    // `recv` names a module/type (imported, or capitalised), not a variable.
+    let receiver_is_symbol = !qualified_other
+        || local_imports.contains_key(lookup_name)
+        || lookup_name.starts_with(|c: char| c.is_ascii_uppercase());
+    if resolved.is_none() && receiver_is_symbol {
         if let Some(paths) = imports_map.get(lookup_name) {
             if paths.len() == 1 {
-                resolved_path = Some(paths[0].clone());
+                resolved = Some((paths[0].clone(), 5));
             } else if paths.len() > 1 {
                 // Try to disambiguate via local imports
                 if let Some(full_import) = local_imports.get(lookup_name) {
                     if let Some(direct_paths) = imports_map.get(full_import.as_str()) {
                         if direct_paths.len() == 1 {
-                            resolved_path = Some(direct_paths[0].clone());
+                            resolved = Some((direct_paths[0].clone(), 6));
                         }
                     }
-                    if resolved_path.is_none() {
+                    if resolved.is_none() {
                         let import_path = full_import.replace('.', "/");
-                        for p in paths {
-                            if p.contains(&import_path) {
-                                resolved_path = Some(p.clone());
-                                break;
-                            }
+                        if let Some(p) = paths.iter().find(|p| p.contains(&import_path)) {
+                            resolved = Some((p.clone(), 7));
+                        }
+                    }
+                }
+            }
+        }
+        // `Type.method()` where Type resolved to a file: prefer the class
+        // that declares the method (it may be inherited).
+        if qualified_other {
+            if let Some((ref file, _)) = resolved {
+                if types.declares(lookup_name, file) {
+                    if let Some((f, depth)) = types.find_method(lookup_name, file, called_name, false) {
+                        if depth > 0 {
+                            resolved = Some((f, 4));
                         }
                     }
                 }
@@ -156,22 +333,23 @@ pub fn resolve_function_call(
         }
     }
 
-    if resolved_path.is_none() {
-        is_unresolved_external = true;
-    }
-
     // 5. Fallback: try called_name directly
-    if resolved_path.is_none() {
+    if resolved.is_none() {
+        is_unresolved_external = true;
         if qualified_other && (external_receiver_type || !imports_map.contains_key(called_name.as_str())) {
-            // Unresolvable receiver call. Pointing it at the caller's file
-            // would bind it to a same-named local function (false recursion),
-            // so drop it in that case; otherwise keep it as external.
+            // The receiver's type is known but lives outside the repo: the
+            // target can't be in the graph (upstream: receiver_resolution_failed).
+            if external_receiver_type {
+                return None;
+            }
+            // Pointing it at the caller's file would bind it to a same-named
+            // local function (false recursion), so drop it in that case.
             if local_names.contains(called_name.as_str()) {
                 return None;
             }
-            resolved_path = Some(caller_file_path.to_string());
+            resolved = Some((own(), 9));
         } else if !qualified_other && local_names.contains(called_name.as_str()) {
-            resolved_path = Some(caller_file_path.to_string());
+            resolved = Some((own(), 2));
             is_unresolved_external = false;
         } else if let Some(all_candidates) = imports_map.get(called_name.as_str()) {
             // A receiver call can't target the caller's own namesake.
@@ -186,28 +364,22 @@ pub fn resolve_function_call(
             if candidates.is_empty() && qualified_other && local_names.contains(called_name.as_str()) {
                 return None;
             }
-            if !candidates.is_empty() {
-                // Try matching via local imports
-                let mut found = false;
-                for p in &candidates {
-                    for imp_name in local_imports.values() {
-                        if p.contains(&imp_name.replace('.', "/")) {
-                            resolved_path = Some((*p).clone());
-                            is_unresolved_external = false;
-                            found = true;
-                            break;
-                        }
-                    }
-                    if found {
-                        break;
-                    }
+            // Try matching via local imports
+            for p in &candidates {
+                if local_imports.values().any(|imp| p.contains(&imp.replace('.', "/"))) {
+                    resolved = Some(((*p).clone(), 7));
+                    is_unresolved_external = false;
+                    break;
                 }
-                if resolved_path.is_none() {
-                    resolved_path = Some(candidates[0].to_string());
+            }
+            if resolved.is_none() {
+                if let Some(first) = candidates.first() {
+                    resolved = Some(((*first).clone(), if candidates.len() == 1 { 5 } else { 8 }));
+                    is_unresolved_external = candidates.len() != 1;
                 }
             }
         } else {
-            resolved_path = Some(caller_file_path.to_string());
+            resolved = Some((own(), 9));
         }
     }
 
@@ -215,7 +387,8 @@ pub fn resolve_function_call(
         return None;
     }
 
-    let resolved_path = resolved_path.unwrap_or_else(|| caller_file_path.to_string());
+    let (resolved_path, tier) = resolved.unwrap_or_else(|| (own(), 9));
+    let confidence = confidence_label(tier, is_unresolved_external);
 
     // Determine call type based on context
     if let (Some(name), Some(_), Some(line)) =
@@ -231,6 +404,8 @@ pub fn resolve_function_call(
             line_number: call.line_number,
             args: call.args.clone(),
             full_call_name: call.full_name.clone(),
+            tier,
+            confidence,
         })
     } else {
         Some(ResolvedCall {
@@ -243,6 +418,8 @@ pub fn resolve_function_call(
             line_number: call.line_number,
             args: call.args.clone(),
             full_call_name: call.full_name.clone(),
+            tier,
+            confidence,
         })
     }
 }
@@ -314,6 +491,7 @@ pub fn build_function_call_groups(
     skip_external: bool,
 ) -> CallGroups {
     let mut groups = CallGroups::default();
+    let types = TypeIndex::build(all_files);
 
     // Cache filtered imports_map per language
     let mut lang_cache: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
@@ -343,6 +521,7 @@ pub fn build_function_call_groups(
                 &local_names_owned,
                 &file_data.local_imports,
                 effective_map,
+                &types,
                 skip_external,
             ) {
                 Some(r) => r,
@@ -409,6 +588,7 @@ mod tests {
             &local_names,
             &local_imports,
             &imports_map,
+            &TypeIndex::default(),
             false,
         );
 
@@ -445,6 +625,7 @@ mod tests {
             &local_names,
             &local_imports,
             &imports_map,
+            &TypeIndex::default(),
             false,
         );
 
@@ -472,6 +653,7 @@ mod tests {
             &HashSet::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &TypeIndex::default(),
             false,
         );
         assert!(result.is_none());
@@ -488,6 +670,8 @@ mod tests {
             function_names: ["main"].iter().map(|s| s.to_string()).collect(),
             class_names: HashSet::new(),
             local_imports: HashMap::new(),
+            class_methods: HashMap::new(),
+            class_bases: HashMap::new(),
             calls: vec![CallInput {
                 name: "Helper".to_string(),
                 full_name: "Helper".to_string(),
@@ -541,7 +725,7 @@ mod tests {
         imports_map.insert("PointService".to_string(), vec!["/repo/PointService.java".to_string()]);
 
         let r = resolve_function_call(
-            &call, "/repo/PointController.java", &local_names, &HashMap::new(), &imports_map, false,
+            &call, "/repo/PointController.java", &local_names, &HashMap::new(), &imports_map, &TypeIndex::default(), false,
         )
         .unwrap();
         assert_eq!(r.called_file_path, "/repo/PointService.java");
@@ -553,7 +737,7 @@ mod tests {
         let call = receiver_call("add", "items.add", Some("List"));
         let local_names: HashSet<String> = ["add".to_string()].into();
         let r = resolve_function_call(
-            &call, "/repo/Cart.java", &local_names, &HashMap::new(), &HashMap::new(), false,
+            &call, "/repo/Cart.java", &local_names, &HashMap::new(), &HashMap::new(), &TypeIndex::default(), false,
         );
         assert!(r.is_none());
     }
@@ -563,7 +747,7 @@ mod tests {
         let call = receiver_call("helper", "this.helper", None);
         let local_names: HashSet<String> = ["helper".to_string()].into();
         let r = resolve_function_call(
-            &call, "/repo/A.java", &local_names, &HashMap::new(), &HashMap::new(), false,
+            &call, "/repo/A.java", &local_names, &HashMap::new(), &HashMap::new(), &TypeIndex::default(), false,
         )
         .unwrap();
         assert_eq!(r.called_file_path, "/repo/A.java");
@@ -580,9 +764,133 @@ mod tests {
             vec!["/repo/BaseCrudService.java".to_string(), "/repo/Repo.java".to_string()],
         );
         let r = resolve_function_call(
-            &call, "/repo/BaseCrudService.java", &local_names, &HashMap::new(), &imports_map, false,
+            &call, "/repo/BaseCrudService.java", &local_names, &HashMap::new(), &imports_map, &TypeIndex::default(), false,
         )
         .unwrap();
         assert_eq!(r.called_file_path, "/repo/Repo.java");
+    }
+
+    #[test]
+    fn test_builtin_names_only_skipped_for_unqualified_python_calls() {
+        let resolve = |name: &str, full: &str, file: &str| {
+            let call = receiver_call(name, full, None);
+            resolve_function_call(&call, file, &HashSet::new(), &HashMap::new(), &HashMap::new(), &TypeIndex::default(), false)
+        };
+        assert!(resolve("len", "len", "/repo/a.py").is_none());
+        assert!(resolve("list", "repo.list", "/repo/a.py").is_some());
+        assert!(resolve("list", "service.list", "/repo/A.java").is_some());
+        assert!(resolve("all", "all", "/repo/a.ts").is_some());
+    }
+
+    fn file(path: &str, classes: &[(&str, &[&str], &[&str])], calls: Vec<CallInput>) -> FileCallData {
+        FileCallData {
+            path: path.to_string(),
+            lang: "java".to_string(),
+            function_names: classes.iter().flat_map(|(_, m, _)| m.iter().map(|s| s.to_string())).collect(),
+            class_names: classes.iter().map(|(c, _, _)| c.to_string()).collect(),
+            local_imports: HashMap::new(),
+            calls,
+            class_methods: classes
+                .iter()
+                .map(|(c, m, _)| (c.to_string(), m.iter().map(|s| s.to_string()).collect()))
+                .collect(),
+            class_bases: classes
+                .iter()
+                .map(|(c, _, b)| (c.to_string(), b.iter().map(|s| s.to_string()).collect()))
+                .collect(),
+        }
+    }
+
+    fn in_class(mut c: CallInput, class: &str) -> CallInput {
+        c.class_context_name = Some(class.to_string());
+        c
+    }
+
+    fn hierarchy_fixture() -> (Vec<FileCallData>, HashMap<String, Vec<String>>) {
+        let files = vec![
+            file("/r/BaseCrudService.java", &[("BaseCrudService", &["save", "search"], &[])], vec![]),
+            file("/r/PetService.java", &[("PetService", &["create", "save"], &["BaseCrudService"])], vec![]),
+            file("/r/PetController.java", &[("PetController", &["list"], &[])], vec![]),
+        ];
+        let mut imports_map = HashMap::new();
+        for (n, p) in [("BaseCrudService", "/r/BaseCrudService.java"), ("PetService", "/r/PetService.java"), ("PetController", "/r/PetController.java")] {
+            imports_map.insert(n.to_string(), vec![p.to_string()]);
+        }
+        (files, imports_map)
+    }
+
+    #[test]
+    fn test_receiver_method_resolved_through_bases() {
+        let (files, imports_map) = hierarchy_fixture();
+        let types = TypeIndex::build(&files);
+        let local: HashSet<String> = ["list".to_string()].into();
+        let resolve = |name: &str| {
+            let call = receiver_call(name, &format!("petService.{name}"), Some("PetService"));
+            resolve_function_call(&call, "/r/PetController.java", &local, &HashMap::new(), &imports_map, &types, false).unwrap()
+        };
+        // declared on PetService itself
+        let r = resolve("create");
+        assert_eq!((r.called_file_path.as_str(), r.tier, r.confidence), ("/r/PetService.java", 3, "INFERRED"));
+        // inherited from BaseCrudService
+        let r = resolve("search");
+        assert_eq!((r.called_file_path.as_str(), r.tier), ("/r/BaseCrudService.java", 4));
+        // overridden: most-derived wins
+        assert_eq!(resolve("save").called_file_path, "/r/PetService.java");
+        // declared outside the repo (e.g. JpaRepository): falls back to the type's file
+        assert_eq!(resolve("findById").called_file_path, "/r/PetService.java");
+    }
+
+    #[test]
+    fn test_super_and_inherited_unqualified_calls() {
+        let (files, imports_map) = hierarchy_fixture();
+        let types = TypeIndex::build(&files);
+        let local: HashSet<String> = ["create".to_string(), "save".to_string()].into();
+        let resolve = |full: &str, name: &str| {
+            let call = in_class(receiver_call(name, full, None), "PetService");
+            resolve_function_call(&call, "/r/PetService.java", &local, &HashMap::new(), &imports_map, &types, false).unwrap()
+        };
+        // super.save() skips the override in PetService
+        let r = resolve("super.save", "save");
+        assert_eq!((r.called_file_path.as_str(), r.tier), ("/r/BaseCrudService.java", 4));
+        // this.save() is the local override
+        assert_eq!(resolve("this.save", "save").called_file_path, "/r/PetService.java");
+        // this.search() / search() are inherited
+        assert_eq!(resolve("this.search", "search").called_file_path, "/r/BaseCrudService.java");
+        let r = resolve("search", "search");
+        assert_eq!((r.called_file_path.as_str(), r.tier, r.confidence), ("/r/BaseCrudService.java", 2, "EXTRACTED"));
+    }
+
+    #[test]
+    fn test_external_receiver_dropped_and_unresolved_is_ambiguous() {
+        let types = TypeIndex::default();
+        // List is not a repo type → no edge at all
+        let call = receiver_call("add", "items.add", Some("List"));
+        assert!(resolve_function_call(&call, "/r/A.java", &HashSet::new(), &HashMap::new(), &HashMap::new(), &types, false).is_none());
+        // unknown receiver → kept, but as an AMBIGUOUS tier-9 edge
+        let call = receiver_call("run", "thing.run", Some("thing"));
+        let r = resolve_function_call(&call, "/r/A.java", &HashSet::new(), &HashMap::new(), &HashMap::new(), &types, false).unwrap();
+        assert_eq!((r.tier, r.confidence), (9, "AMBIGUOUS"));
+    }
+
+    #[test]
+    fn test_untyped_receiver_variable_is_not_looked_up_as_a_type() {
+        // `var list = new ArrayList<>(); list.add(x)` → inferred_obj_type is the
+        // variable name; a repo method called `list` must not capture it.
+        let mut imports_map = HashMap::new();
+        imports_map.insert("list".to_string(), vec!["/r/BaseCrudController.java".to_string()]);
+        let call = receiver_call("add", "list.add", Some("list"));
+        let r = resolve_function_call(&call, "/r/A.java", &HashSet::new(), &HashMap::new(), &imports_map, &TypeIndex::default(), false).unwrap();
+        assert_ne!(r.called_file_path, "/r/BaseCrudController.java");
+        assert_eq!(r.confidence, "AMBIGUOUS");
+    }
+
+    #[test]
+    fn test_receiver_type_not_applied_to_chained_calls() {
+        let (files, imports_map) = hierarchy_fixture();
+        let types = TypeIndex::build(&files);
+        // petService.repo().search(): the type of petService says nothing about repo()'s result
+        let call = receiver_call("search", "petService.repo().search", Some("PetService"));
+        let r = resolve_function_call(&call, "/r/PetController.java", &HashSet::new(), &HashMap::new(), &imports_map, &types, false);
+        assert!(r.map_or(true, |r| r.called_file_path != "/r/BaseCrudService.java"));
     }
 }

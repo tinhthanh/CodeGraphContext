@@ -122,25 +122,42 @@ pub fn get_parent_context(
             // For arrow_function / function_expression without a name field,
             // look up to the parent variable_declarator or assignment for the name.
             // e.g., `const loadCvs = async () => { get() }` → name = "loadCvs"
-            if name.is_none()
-                && (parent.kind() == "arrow_function"
-                    || parent.kind() == "function_expression")
-            {
+            let is_anon_fn =
+                parent.kind() == "arrow_function" || parent.kind() == "function_expression";
+            if name.is_none() && is_anon_fn {
                 if let Some(grandparent) = parent.parent() {
-                    if grandparent.kind() == "variable_declarator" {
-                        name = grandparent
-                            .child_by_field_name("name")
-                            .map(|n| get_node_text(&n, source).to_string());
-                    } else if grandparent.kind() == "assignment_expression" {
-                        name = grandparent
-                            .child_by_field_name("left")
-                            .map(|n| get_node_text(&n, source).to_string());
-                    } else if grandparent.kind() == "pair" {
-                        name = grandparent
-                            .child_by_field_name("key")
-                            .map(|n| get_node_text(&n, source).to_string());
-                    }
+                    let name_node = match grandparent.kind() {
+                        "variable_declarator" => grandparent.child_by_field_name("name"),
+                        "assignment_expression" => {
+                            // `Foo.prototype.bar = function(){}` → "bar"
+                            grandparent.child_by_field_name("left").map(|left| {
+                                if left.kind() == "member_expression" {
+                                    left.child_by_field_name("property").unwrap_or(left)
+                                } else {
+                                    left
+                                }
+                            })
+                        }
+                        "pair" => grandparent.child_by_field_name("key"),
+                        // Class field: `handler = () => {}`
+                        "public_field_definition" | "field_definition" | "property_definition" => {
+                            grandparent
+                                .child_by_field_name("name")
+                                .or_else(|| grandparent.child_by_field_name("property"))
+                        }
+                        _ => None,
+                    };
+                    name = name_node
+                        .map(|n| get_node_text(&n, source).to_string())
+                        .filter(|s| !s.is_empty());
                 }
+            }
+
+            // An anonymous callback (e.g. `useEffect(() => { ... })`) is not a
+            // useful context: keep walking up to the nearest named ancestor.
+            if name.is_none() && is_anon_fn {
+                curr = parent.parent();
+                continue;
             }
 
             let kind = Some(parent.kind().to_string());

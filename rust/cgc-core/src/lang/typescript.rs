@@ -1194,4 +1194,28 @@ const handlers = {
             submit_call.context.0
         );
     }
+
+    #[test]
+    fn test_call_context_anonymous_and_class_field() {
+        let code = r#"
+function load(): void {
+    useEffect(() => { fetchData(); });
+}
+Foo.prototype.bar = function () { helper(); };
+class Widget {
+    private onClick = (): void => { this.save(); };
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = TypeScriptExtractor.find_calls(&tree.root_node(), &source);
+        let ctx = |name: &str| {
+            calls
+                .iter()
+                .find(|c| c.name == name)
+                .and_then(|c| c.context.0.clone())
+        };
+        assert_eq!(ctx("fetchData").as_deref(), Some("load"));
+        assert_eq!(ctx("helper").as_deref(), Some("bar"));
+        assert_eq!(ctx("save").as_deref(), Some("onClick"));
+    }
 }

@@ -215,17 +215,174 @@ impl JavaScriptExtractor {
                         }
                     }
                 }
-                "rest_pattern" => {
-                    if let Some(arg) = child.child_by_field_name("argument") {
-                        if arg.kind() == "identifier" {
-                            params.push(format!("...{}", get_node_text(&arg, source)));
+                "rest_pattern" | "rest_element" => {
+                    // `...args`: the grammar has no field here, so fall back to
+                    // the identifier child.
+                    let name_node = child
+                        .child_by_field_name("argument")
+                        .or_else(|| child.child_by_field_name("name"))
+                        .or_else(|| {
+                            (0..child.child_count())
+                                .filter_map(|j| child.child(j))
+                                .find(|c| c.kind() == "identifier")
+                        });
+                    if let Some(arg) = name_node {
+                        params.push(format!("...{}", get_node_text(&arg, source)));
+                    }
+                }
+                // Destructured params: one entry per parameter position so
+                // arity is unchanged, listing the local names it binds.
+                "object_pattern" => {
+                    let names = Self::pattern_binding_names(&child, source);
+                    params.push(if names.is_empty() {
+                        "{...}".to_string()
+                    } else {
+                        format!("{{{}}}", names.join(", "))
+                    });
+                }
+                "array_pattern" => {
+                    let names = Self::pattern_binding_names(&child, source);
+                    params.push(if names.is_empty() {
+                        "[...]".to_string()
+                    } else {
+                        format!("[{}]", names.join(", "))
+                    });
+                }
+                _ => {}
+            }
+        }
+        params
+    }
+
+    /// Local names a destructuring pattern binds, in source order.
+    /// `{a, b: local, c = 1, ...rest}` → ["a", "local", "c", "...rest"].
+    fn pattern_binding_names(pattern: &Node, source: &[u8]) -> Vec<String> {
+        fn walk(node: &Node, source: &[u8], names: &mut Vec<String>) {
+            for i in 0..node.named_child_count() {
+                let child = match node.named_child(i) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                match child.kind() {
+                    "identifier" | "shorthand_property_identifier_pattern" => {
+                        names.push(get_node_text(&child, source).to_string());
+                    }
+                    "pair_pattern" => {
+                        // { a: local } — the binding is the value, not the key
+                        if let Some(value) = child.child_by_field_name("value") {
+                            if value.kind() == "identifier" {
+                                names.push(get_node_text(&value, source).to_string());
+                            } else {
+                                walk(&value, source, names);
+                            }
+                        }
+                    }
+                    "object_assignment_pattern" | "assignment_pattern" => {
+                        // { a = 1 } / [a = 1]
+                        let target = child
+                            .child_by_field_name("left")
+                            .or_else(|| child.named_child(0));
+                        if let Some(t) = target {
+                            if matches!(
+                                t.kind(),
+                                "identifier" | "shorthand_property_identifier_pattern"
+                            ) {
+                                names.push(get_node_text(&t, source).to_string());
+                            } else {
+                                walk(&t, source, names);
+                            }
+                        }
+                    }
+                    "object_pattern" | "array_pattern" => walk(&child, source, names),
+                    "rest_pattern" | "rest_element" => {
+                        if let Some(inner) = (0..child.child_count())
+                            .filter_map(|j| child.child(j))
+                            .find(|c| c.kind() == "identifier")
+                        {
+                            names.push(format!("...{}", get_node_text(&inner, source)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut names = Vec::new();
+        walk(pattern, source, &mut names);
+        names
+    }
+
+    /// Process an import_clause node, which wraps the actual import specifiers.
+    fn process_import_clause(
+        &self,
+        clause: &Node,
+        import_source: &str,
+        line_number: usize,
+        source: &[u8],
+        imports: &mut Vec<ImportData>,
+    ) {
+        for i in 0..clause.child_count() {
+            let child = match clause.child(i) {
+                Some(c) => c,
+                None => continue,
+            };
+            match child.kind() {
+                "identifier" => {
+                    let alias = get_node_text(&child, source).to_string();
+                    imports.push(ImportData {
+                        name: "default".to_string(),
+                        full_import_name: import_source.to_string(),
+                        line_number,
+                        alias: Some(alias),
+                        context: (None, None),
+                        lang: self.lang_name().to_string(),
+                        is_dependency: false,
+                    });
+                }
+                "namespace_import" => {
+                    let alias_node = (0..child.child_count())
+                        .filter_map(|j| child.child(j))
+                        .find(|c| c.kind() == "identifier");
+                    if let Some(alias_n) = alias_node {
+                        let alias = get_node_text(&alias_n, source).to_string();
+                        imports.push(ImportData {
+                            name: "*".to_string(),
+                            full_import_name: import_source.to_string(),
+                            line_number,
+                            alias: Some(alias),
+                            context: (None, None),
+                            lang: self.lang_name().to_string(),
+                            is_dependency: false,
+                        });
+                    }
+                }
+                "named_imports" => {
+                    for j in 0..child.child_count() {
+                        if let Some(specifier) = child.child(j) {
+                            if specifier.kind() == "import_specifier" {
+                                let spec_name = specifier
+                                    .child_by_field_name("name")
+                                    .map(|n| get_node_text(&n, source).to_string());
+                                let spec_alias = specifier
+                                    .child_by_field_name("alias")
+                                    .map(|n| get_node_text(&n, source).to_string());
+                                if let Some(imported_name) = spec_name {
+                                    imports.push(ImportData {
+                                        name: imported_name,
+                                        full_import_name: import_source.to_string(),
+                                        line_number,
+                                        alias: spec_alias,
+                                        context: (None, None),
+                                        lang: self.lang_name().to_string(),
+                                        is_dependency: false,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
                 _ => {}
             }
         }
-        params
     }
 
     /// Extract JSDoc comment preceding a function node.
@@ -488,91 +645,15 @@ impl LanguageExtractor for JavaScriptExtractor {
                         });
                     }
                     Some(clause) => {
-                        // import_clause wraps the actual form: look inside it
-                        let inner = if clause.kind() == "import_clause" {
-                            // Get the first named child inside import_clause
-                            (0..clause.named_child_count())
-                                .filter_map(|i| clause.named_child(i))
-                                .next()
-                        } else {
-                            Some(clause)
-                        };
-                        let inner = match inner {
-                            Some(n) => n,
-                            None => continue,
-                        };
-                        match inner.kind() {
-                            "identifier" => {
-                                // Default import: import foo from '...'
-                                let alias = get_node_text(&inner, source).to_string();
-                                imports.push(ImportData {
-                                    name: "default".to_string(),
-                                    full_import_name: import_source,
-                                    line_number,
-                                    alias: Some(alias),
-                                    context: (None, None),
-                                    lang: self.lang_name().to_string(),
-                                    is_dependency: false,
-                                });
-                            }
-                            "namespace_import" => {
-                                // import * as name from '...'
-                                let alias = inner
-                                    .child_by_field_name("alias")
-                                    .or_else(|| {
-                                        // Fallback: find identifier child
-                                        (0..inner.child_count())
-                                            .filter_map(|i| inner.child(i))
-                                            .find(|c| c.kind() == "identifier")
-                                    })
-                                    .map(|n| get_node_text(&n, source).to_string());
-                                imports.push(ImportData {
-                                    name: "*".to_string(),
-                                    full_import_name: import_source,
-                                    line_number,
-                                    alias,
-                                    context: (None, None),
-                                    lang: self.lang_name().to_string(),
-                                    is_dependency: false,
-                                });
-                            }
-                            "named_imports" => {
-                                // import { name, name as alias } from '...'
-                                for i in 0..inner.child_count() {
-                                    if let Some(spec) = inner.child(i) {
-                                        if spec.kind() == "import_specifier" {
-                                            let name_node = spec.child_by_field_name("name");
-                                            let alias_node = spec.child_by_field_name("alias");
-                                            if let Some(nn) = name_node {
-                                                let original = get_node_text(&nn, source).to_string();
-                                                let alias = alias_node.map(|a| get_node_text(&a, source).to_string());
-                                                imports.push(ImportData {
-                                                    name: original,
-                                                    full_import_name: import_source.clone(),
-                                                    line_number,
-                                                    alias,
-                                                    context: (None, None),
-                                                    lang: self.lang_name().to_string(),
-                                                    is_dependency: false,
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                // Fallback: treat as side-effect
-                                imports.push(ImportData {
-                                    name: import_source.clone(),
-                                    full_import_name: import_source,
-                                    line_number,
-                                    alias: None,
-                                    context: (None, None),
-                                    lang: self.lang_name().to_string(),
-                                    is_dependency: false,
-                                });
-                            }
-                        }
+                        // One clause can carry several bindings at once
+                        // (import React, { useState } from 'react').
+                        self.process_import_clause(
+                            &clause,
+                            &import_source,
+                            line_number,
+                            source,
+                            &mut imports,
+                        );
                     }
                 }
             } else if node.kind() == "call_expression" {
@@ -936,5 +1017,86 @@ const handler = () => {};
         assert!(names.contains(&"MyClass".to_string()));
         assert!(names.contains(&"myFunc".to_string()));
         assert!(names.contains(&"handler".to_string()));
+    }
+
+    fn call_context<'a>(calls: &'a [CallData], name: &str) -> Option<&'a str> {
+        calls
+            .iter()
+            .find(|c| c.name == name)
+            .and_then(|c| c.context.0.as_deref())
+    }
+
+    #[test]
+    fn test_call_context_skips_anonymous_callback() {
+        let code = r#"
+function load() {
+    useEffect(() => {
+        fetchData();
+    });
+    items.forEach(function (x) { process(x); });
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = JavaScriptExtractor.find_calls(&tree.root_node(), &source);
+        assert_eq!(call_context(&calls, "fetchData"), Some("load"));
+        assert_eq!(call_context(&calls, "process"), Some("load"));
+    }
+
+    #[test]
+    fn test_call_context_member_assignment_uses_property() {
+        let code = r#"
+Foo.prototype.bar = function () { helper(); };
+obj.handler = () => { other(); };
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = JavaScriptExtractor.find_calls(&tree.root_node(), &source);
+        assert_eq!(call_context(&calls, "helper"), Some("bar"));
+        assert_eq!(call_context(&calls, "other"), Some("handler"));
+    }
+
+    #[test]
+    fn test_call_context_class_field_arrow() {
+        let code = r#"
+class Widget {
+    onClick = () => { this.save(); };
+}
+"#;
+        let (tree, source) = parse_source(code);
+        let calls = JavaScriptExtractor.find_calls(&tree.root_node(), &source);
+        assert_eq!(call_context(&calls, "save"), Some("onClick"));
+    }
+
+    #[test]
+    fn test_find_imports_default_and_named_together() {
+        let code = "import React, { useState, useEffect as fx } from 'react';\n";
+        let (tree, source) = parse_source(code);
+        let imports = JavaScriptExtractor.find_imports(&tree.root_node(), &source);
+        let got: Vec<(&str, Option<&str>)> = imports
+            .iter()
+            .map(|i| (i.name.as_str(), i.alias.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("default", Some("React")),
+                ("useState", None),
+                ("useEffect", Some("fx")),
+            ]
+        );
+        assert!(imports.iter().all(|i| i.full_import_name == "react"));
+    }
+
+    #[test]
+    fn test_extract_rest_and_destructured_params() {
+        let code = r#"
+function f(a, ...rest) {}
+function Button({ label, onClick: handle, size = 1 }, [x, y], opts = {}) {}
+"#;
+        let (tree, source) = parse_source(code);
+        let funcs = JavaScriptExtractor.find_functions(&tree.root_node(), &source, false);
+        let f = funcs.iter().find(|f| f.name == "f").unwrap();
+        assert_eq!(f.args, vec!["a", "...rest"]);
+        let b = funcs.iter().find(|f| f.name == "Button").unwrap();
+        assert_eq!(b.args, vec!["{label, handle, size}", "[x, y]", "opts"]);
     }
 }
