@@ -300,8 +300,10 @@ class DuckDBGraphWriter:
         for edge in (inheritance or []):
             child_name = edge.get("child_name", "")
             parent_name = edge.get("parent_name", "")
-            child_path = edge.get("child_file_path", "")
-            parent_path = edge.get("parent_file_path", "")
+            # Rust resolver emits `path` / `resolved_parent_file_path` (same
+            # contract as the graph writer); keep the old keys as fallback.
+            child_path = edge.get("path") or edge.get("child_file_path", "")
+            parent_path = edge.get("resolved_parent_file_path") or edge.get("parent_file_path", "")
             # Normalize to relative paths
             try:
                 child_path = str(Path(child_path).relative_to(repo_path_obj)) if child_path else ""
@@ -544,10 +546,11 @@ class DuckDBGraphWriter:
                 for base_name in base_names:
                     if base_name in class_map:
                         parent_uid, parent_path = class_map[base_name]
-                        # Check if already in inheritance table
+                        # Skip if the resolver already linked this child to a
+                        # parent of that name (possibly in another file).
                         exists = c.execute(
-                            "SELECT 1 FROM inheritance WHERE child_uid=? AND parent_uid=?",
-                            [child_uid, parent_uid],
+                            "SELECT 1 FROM inheritance WHERE child_name=? AND child_path=? AND parent_name=?",
+                            [child_name, child_path, base_name],
                         ).fetchone()
                         if not exists:
                             c.execute(
