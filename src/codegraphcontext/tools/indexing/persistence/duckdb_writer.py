@@ -77,11 +77,19 @@ class DuckDBGraphWriter:
             line_number INTEGER, complexity INTEGER DEFAULT 0,
             return_type VARCHAR DEFAULT '', docstring VARCHAR DEFAULT '',
             class_context VARCHAR DEFAULT '', is_async BOOLEAN DEFAULT FALSE,
-            body_start_line INTEGER DEFAULT 0, body_end_line INTEGER DEFAULT 0)""")
+            body_start_line INTEGER DEFAULT 0, body_end_line INTEGER DEFAULT 0,
+            decorators VARCHAR DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS classes (
             uid VARCHAR PRIMARY KEY, name VARCHAR, path VARCHAR,
             line_number INTEGER, docstring VARCHAR DEFAULT '',
-            bases VARCHAR DEFAULT '')""")
+            bases VARCHAR DEFAULT '', decorators VARCHAR DEFAULT '')""")
+        # Dependency injection: injector class -> injected bean type
+        # (Spring @Autowired/@Inject fields, Lombok final fields, constructors)
+        c.execute("""CREATE TABLE IF NOT EXISTS injections (
+            injector_class VARCHAR, injector_path VARCHAR,
+            injected_type VARCHAR, injected_path VARCHAR DEFAULT '',
+            field_name VARCHAR DEFAULT '', line_number INTEGER DEFAULT 0,
+            kind VARCHAR DEFAULT '', stereotype VARCHAR DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS variables (
             uid VARCHAR PRIMARY KEY, name VARCHAR, path VARCHAR,
             line_number INTEGER, type VARCHAR DEFAULT '')""")
@@ -157,9 +165,11 @@ class DuckDBGraphWriter:
         # Functions
         fn_uid = []; fn_name = []; fn_path = []; fn_line = []
         fn_cx = []; fn_rt = []; fn_doc = []; fn_cc = []; fn_async = []
-        fn_bstart = []; fn_bend = []
+        fn_bstart = []; fn_bend = []; fn_dec = []
         # Classes
-        cl_uid = []; cl_name = []; cl_path = []; cl_line = []; cl_doc = []; cl_bases = []
+        cl_uid = []; cl_name = []; cl_path = []; cl_line = []; cl_doc = []; cl_bases = []; cl_dec = []
+        # Injections (target path resolved after all classes are known)
+        inj_rows = []  # (injector_class, injector_rel, injected_type, field, line, kind, stereotype, imports)
         # Variables
         v_uid = []; v_name = []; v_path = []; v_line = []; v_type = []
         # Parameters
@@ -211,6 +221,7 @@ class DuckDBGraphWriter:
                     fn_async.append(fn.get("is_async", False) or False)
                     fn_bstart.append(fn.get("body_start_line", 0) or 0)
                     fn_bend.append(fn.get("body_end_line", 0) or 0)
+                    fn_dec.append("\n".join(fn.get("decorators", []) or []))
                     fc_fp.append(rel); fc_uid.append(uid); fc_type.append("Function")
 
                     # Parameters
@@ -234,7 +245,18 @@ class DuckDBGraphWriter:
                     cl_doc.append(cls.get("docstring", "") or "")
                     bases = cls.get("bases", [])
                     cl_bases.append(",".join(str(b) for b in bases) if bases else "")
+                    cl_dec.append("\n".join(cls.get("decorators", []) or []))
                     fc_fp.append(rel); fc_uid.append(uid); fc_type.append("Class")
+
+            # Injections
+            if r.get("injections"):
+                file_imports = [i.get("name", "") for i in r.get("imports", []) or []]
+                for inj in r["injections"]:
+                    inj_rows.append((
+                        inj.get("injector_class", ""), rel, inj.get("injected_type", ""),
+                        inj.get("field_name", ""), inj.get("line_number", 0),
+                        inj.get("kind", ""), inj.get("stereotype") or "", file_imports,
+                    ))
 
             # Variables
             for var in r.get("variables", []):
@@ -345,11 +367,13 @@ class DuckDBGraphWriter:
             "complexity": fn_cx, "return_type": fn_rt, "docstring": fn_doc,
             "class_context": fn_cc, "is_async": fn_async,
             "body_start_line": fn_bstart, "body_end_line": fn_bend,
+            "decorators": fn_dec,
         }), f"{pq_dir}/functions.parquet")
 
         pq.write_table(pa.table({
             "uid": cl_uid, "name": cl_name, "path": cl_path,
             "line_number": cl_line, "docstring": cl_doc, "bases": cl_bases,
+            "decorators": cl_dec,
         }), f"{pq_dir}/classes.parquet")
 
         pq.write_table(pa.table({
@@ -399,7 +423,7 @@ class DuckDBGraphWriter:
         c = self._conn
 
         # Drop existing data
-        for tbl in ["operational_params", "rationales", "routes", "execution_flows", "calls", "inheritance", "file_contains",
+        for tbl in ["operational_params", "rationales", "routes", "execution_flows", "calls", "inheritance", "injections", "file_contains",
                      "imports", "parameters", "variables", "classes", "functions",
                      "directories", "files", "modules", "repository"]:
             c.execute(f"DROP TABLE IF EXISTS {tbl}")
@@ -433,6 +457,12 @@ class DuckDBGraphWriter:
 
         if os.path.exists(f"{pq_dir}/inheritance.parquet"):
             c.execute(f"INSERT INTO inheritance SELECT * FROM read_parquet('{pq_dir}/inheritance.parquet')")
+
+        if inj_rows:
+            c.executemany(
+                "INSERT INTO injections VALUES (?,?,?,?,?,?,?,?)",
+                _resolve_injection_targets(inj_rows, cl_name, cl_path),
+            )
 
         # Indexes for query performance
         c.execute("CREATE INDEX IF NOT EXISTS idx_fn_name ON functions(name)")
@@ -799,3 +829,35 @@ class DuckDBGraphWriter:
         if params:
             return self._conn.execute(query, params)
         return self._conn.execute(query)
+
+
+def _resolve_injection_targets(inj_rows, class_names, class_paths):
+    """Attach the repo file declaring each injected type.
+
+    Unique type name → that file; otherwise the candidate matching one of the
+    injector file's imports; otherwise one in the injector's own package
+    directory (Java same-package types need no import). Unresolvable or
+    external types (e.g. a framework bean) keep an empty path.
+    """
+    by_name: Dict[str, List[str]] = {}
+    for name, path in zip(class_names, class_paths):
+        if name and path not in by_name.setdefault(name, []):
+            by_name[name].append(path)
+    out = []
+    for injector, rel, typ, field, line, kind, stereotype, imports in inj_rows:
+        cands = by_name.get(typ, [])
+        target = ""
+        if len(cands) == 1:
+            target = cands[0]
+        elif cands:
+            for imp in imports:
+                if imp.rsplit(".", 1)[-1] == typ:
+                    imp_path = imp.replace(".", "/")
+                    target = next((p for p in cands if imp_path in p), "")
+                    if target:
+                        break
+            if not target:
+                pkg_dir = os.path.dirname(rel)
+                target = next((p for p in cands if os.path.dirname(p) == pkg_dir), "")
+        out.append((injector, rel, typ, target, field, line, kind, stereotype))
+    return out
