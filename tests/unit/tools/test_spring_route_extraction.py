@@ -123,3 +123,24 @@ public class C {
     parsed = [{"path": str(f), "lang": "java", "functions": [{"name": "a", "line_number": 4}]}]
     (route,) = extract_routes(parsed, str(tmp_path))
     assert route["handler"] == "a" and route["line"] == 4
+
+
+def test_annotations_as_decorators_do_not_duplicate_routes(tmp_path):
+    # Since annotations are exported as `decorators`, the decorator-based
+    # route pass must not add a second (unprefixed) copy of Spring routes.
+    code = '''
+@RestController
+@RequestMapping("/api/pets")
+public class PetController {
+    @GetMapping("/{id}")
+    public Pet get(String id) { return null; }
+}
+'''
+    f = tmp_path / "PetController.java"
+    f.write_text(code, encoding="utf-8")
+    parsed = [{
+        "path": str(f), "lang": "java",
+        "functions": [{"name": "get", "line_number": 5, "decorators": ['@GetMapping("/{id}")']}],
+    }]
+    routes = extract_routes(parsed, str(tmp_path))
+    assert [(r["method"], r["path"]) for r in routes] == [("GET", "/api/pets/{id}")]
