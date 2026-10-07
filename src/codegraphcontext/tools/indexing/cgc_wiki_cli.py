@@ -75,7 +75,7 @@ def cmd_index(args):
     specs = [(f, l, False) for f, l in files]
     results, imports_map = parse_and_prescan(specs)
     valid = [r for r in results if "error" not in r]
-    call_groups = resolve_call_groups(valid, imports_map, False)
+    call_groups, unresolved = resolve_call_groups(valid, imports_map, False, True)
     inheritance, _ = resolve_inheritance(valid, imports_map)
     t_parse = time.time() - t0
     print(f"\nParse + resolve: {t_parse:.1f}s")
@@ -86,7 +86,7 @@ def cmd_index(args):
     db_path = os.path.join(output_dir, "graph.duckdb")
     t0 = time.time()
     writer = DuckDBGraphWriter(db_path)
-    counts = writer.write_all(valid, repo_path, call_groups, inheritance)
+    counts = writer.write_all(valid, repo_path, call_groups, inheritance, unresolved=unresolved)
     t_write = time.time() - t0
 
     # Read back from DB (no duplicate extraction)

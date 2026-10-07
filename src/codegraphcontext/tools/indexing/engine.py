@@ -81,11 +81,15 @@ def pre_scan_for_imports(file_specs):
     return _rust_pre_scan(file_specs)
 
 
-def resolve_call_groups(all_file_data, imports_map, skip_external=False):
-    """Resolve function calls into 6-category groups using Rust."""
+def resolve_call_groups(all_file_data, imports_map, skip_external=False, with_unresolved=False):
+    """Resolve function calls into 6-category groups using Rust.
+
+    With ``with_unresolved=True`` returns ``(groups, unresolved)`` where
+    ``unresolved`` lists the calls that produced no edge and why.
+    """
     if not RUST_AVAILABLE:
         raise RuntimeError("Rust engine required for resolve_call_groups")
-    return _rust_resolve_calls(all_file_data, imports_map, skip_external)
+    return _rust_resolve_calls(all_file_data, imports_map, skip_external, with_unresolved)
 
 
 def resolve_inheritance(all_file_data, imports_map):
