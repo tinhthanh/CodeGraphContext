@@ -64,6 +64,13 @@ fn file_data_to_py(py: Python<'_>, data: &FileData) -> PyResult<PyObject> {
         .collect::<PyResult<_>>()?;
     dict.set_item("injections", injections)?;
 
+    let orm: Vec<PyObject> = data
+        .orm_mappings
+        .iter()
+        .map(|m| orm_to_py(py, m))
+        .collect::<PyResult<_>>()?;
+    dict.set_item("orm_mappings", orm)?;
+
     Ok(dict.into_any().unbind())
 }
 
@@ -74,6 +81,7 @@ fn function_to_py(py: Python<'_>, f: &FunctionData) -> PyResult<PyObject> {
     dict.set_item("end_line", f.end_line)?;
     dict.set_item("args", &f.args)?;
     dict.set_item("cyclomatic_complexity", f.cyclomatic_complexity)?;
+    dict.set_item("return_type", &f.return_type)?;
     dict.set_item("context", &f.context)?;
     dict.set_item("context_type", &f.context_type)?;
     dict.set_item("class_context", &f.class_context)?;
@@ -97,6 +105,7 @@ fn function_to_py(py: Python<'_>, f: &FunctionData) -> PyResult<PyObject> {
 fn class_to_py(py: Python<'_>, c: &ClassData) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     dict.set_item("name", &c.name)?;
+    dict.set_item("kind", &c.kind)?;
     dict.set_item("line_number", c.line_number)?;
     dict.set_item("end_line", c.end_line)?;
     dict.set_item("bases", &c.bases)?;
@@ -154,6 +163,7 @@ fn call_to_py(py: Python<'_>, c: &CallData) -> PyResult<PyObject> {
     dict.set_item("line_number", c.line_number)?;
     dict.set_item("args", &c.args)?;
     dict.set_item("inferred_obj_type", &c.inferred_obj_type)?;
+    dict.set_item("receiver_chain", &c.receiver_chain)?;
 
     // Context as tuple (name, type, line)
     let ctx = pyo3::types::PyTuple::new(py, &[
@@ -188,5 +198,22 @@ fn injection_to_py(py: Python<'_>, inj: &InjectionData) -> PyResult<PyObject> {
     dict.set_item("line_number", inj.line_number)?;
     dict.set_item("kind", &inj.kind)?;
     dict.set_item("stereotype", &inj.stereotype)?;
+    Ok(dict.into_any().unbind())
+}
+
+fn orm_to_py(py: Python<'_>, m: &OrmMappingData) -> PyResult<PyObject> {
+    let dict = PyDict::new(py);
+    dict.set_item("kind", &m.kind)?;
+    dict.set_item("class_name", &m.class_name)?;
+    dict.set_item("method_name", &m.method_name)?;
+    dict.set_item("datastore", &m.datastore)?;
+    dict.set_item("tables", &m.tables)?;
+    dict.set_item("schema", &m.schema)?;
+    dict.set_item("entity", &m.entity)?;
+    dict.set_item("base", &m.base)?;
+    dict.set_item("operation", &m.operation)?;
+    dict.set_item("native", m.native)?;
+    dict.set_item("sql", &m.sql)?;
+    dict.set_item("line_number", m.line_number)?;
     Ok(dict.into_any().unbind())
 }

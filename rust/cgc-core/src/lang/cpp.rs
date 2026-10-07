@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, LanguageExtractor};
+use super::{class_kind, get_node_text, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -346,6 +346,7 @@ impl CppExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&struct_node),
                 name,
                 line_number: struct_node.start_position().row + 1,
                 end_line: struct_node.end_position().row + 1,
@@ -385,6 +386,7 @@ impl CppExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&enum_node),
                 name,
                 line_number: enum_node.start_position().row + 1,
                 end_line: enum_node.end_position().row + 1,
@@ -424,6 +426,7 @@ impl CppExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&union_node),
                 name,
                 line_number: union_node.start_position().row + 1,
                 end_line: union_node.end_position().row + 1,
@@ -463,6 +466,7 @@ impl CppExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&macro_node),
                 name,
                 line_number: macro_node.start_position().row + 1,
                 end_line: macro_node.end_position().row + 1,
@@ -549,6 +553,7 @@ impl LanguageExtractor for CppExtractor {
             let class_ctx = class_context.or_else(|| self.get_class_context_cpp(&func_node, source));
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -602,6 +607,7 @@ impl LanguageExtractor for CppExtractor {
             let bases = self.extract_base_classes(&node, source);
 
             let mut class = ClassData {
+                kind: class_kind(&node),
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
@@ -707,6 +713,7 @@ impl LanguageExtractor for CppExtractor {
             let class_context = self.get_class_context_cpp(&node, source);
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: func_name,
                 full_name: raw_text.to_string(),
                 line_number: node.start_position().row + 1,

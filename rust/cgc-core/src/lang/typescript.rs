@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{class_kind, get_node_text, get_parent_context, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -475,6 +475,7 @@ impl LanguageExtractor for TypeScriptExtractor {
             };
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: func_node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -555,6 +556,7 @@ impl LanguageExtractor for TypeScriptExtractor {
             let (context, _, _) = get_parent_context(&node, source, FC_TYPES);
 
             let mut class = ClassData {
+                kind: class_kind(&node),
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
@@ -574,7 +576,7 @@ impl LanguageExtractor for TypeScriptExtractor {
             classes.push(class);
         }
 
-        // Interfaces stored as classes with "[interface]" prefix in name
+        // Interfaces are stored as classes with kind "interface"
         for (node, capture_name) in self.execute_query(QUERY_INTERFACES, root, source) {
             if capture_name != "interface_node" {
                 continue;
@@ -584,7 +586,7 @@ impl LanguageExtractor for TypeScriptExtractor {
                 Some(n) => n,
                 None => continue,
             };
-            let name = format!("[interface] {}", get_node_text(&name_node, source));
+            let name = get_node_text(&name_node, source).to_string();
 
             // Interfaces can extend other interfaces
             let mut bases = Vec::new();
@@ -606,6 +608,7 @@ impl LanguageExtractor for TypeScriptExtractor {
             }
 
             let mut class = ClassData {
+                kind: class_kind(&node),
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
@@ -625,7 +628,7 @@ impl LanguageExtractor for TypeScriptExtractor {
             classes.push(class);
         }
 
-        // Type aliases stored as classes with "[type]" prefix in name
+        // Type aliases are stored as classes with kind "type_alias"
         for (node, capture_name) in self.execute_query(QUERY_TYPE_ALIASES, root, source) {
             if capture_name != "type_alias_node" {
                 continue;
@@ -635,9 +638,10 @@ impl LanguageExtractor for TypeScriptExtractor {
                 Some(n) => n,
                 None => continue,
             };
-            let name = format!("[type] {}", get_node_text(&name_node, source));
+            let name = get_node_text(&name_node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&node),
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
@@ -800,6 +804,7 @@ impl LanguageExtractor for TypeScriptExtractor {
             );
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name,
                 full_name,
                 line_number: node.start_position().row + 1,
@@ -993,8 +998,9 @@ class UserService {
         let ext = TypeScriptExtractor;
         let classes = ext.find_classes(&tree.root_node(), &source, false);
         let names: Vec<&str> = classes.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.iter().any(|n| n.contains("User") && n.contains("[interface]")));
-        assert!(names.iter().any(|n| n.contains("ID") && n.contains("[type]")));
+        assert!(classes.iter().any(|c| c.name == "User" && c.kind == "interface"));
+        assert!(classes.iter().any(|c| c.name == "ID" && c.kind == "type_alias"));
+        assert!(classes.iter().any(|c| c.name == "UserService" && c.kind == "class"));
         assert!(names.contains(&"UserService"));
     }
 

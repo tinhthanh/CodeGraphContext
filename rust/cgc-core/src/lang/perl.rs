@@ -1,7 +1,7 @@
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{class_kind, get_node_text, get_parent_context, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -130,6 +130,7 @@ impl LanguageExtractor for PerlExtractor {
             );
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
@@ -179,6 +180,7 @@ impl LanguageExtractor for PerlExtractor {
             };
 
             let mut class = ClassData {
+                kind: class_kind(&node),
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
@@ -260,6 +262,7 @@ impl LanguageExtractor for PerlExtractor {
             );
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: call_name.clone(),
                 full_name: call_name,
                 line_number: node.start_position().row + 1,

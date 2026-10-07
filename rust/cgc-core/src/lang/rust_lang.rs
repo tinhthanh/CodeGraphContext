@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, LanguageExtractor};
+use super::{class_kind, get_node_text, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -257,6 +257,7 @@ impl LanguageExtractor for RustExtractor {
             let class_context = self.get_class_context_rust(&func_node, source);
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -303,6 +304,7 @@ impl LanguageExtractor for RustExtractor {
             let (context, _, _) = self.get_parent_context_rust(&struct_node, source);
 
             let mut class = ClassData {
+                kind: class_kind(&struct_node),
                 name,
                 line_number: struct_node.start_position().row + 1,
                 end_line: struct_node.end_position().row + 1,
@@ -334,6 +336,7 @@ impl LanguageExtractor for RustExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&enum_node),
                 name,
                 line_number: enum_node.start_position().row + 1,
                 end_line: enum_node.end_position().row + 1,
@@ -365,6 +368,7 @@ impl LanguageExtractor for RustExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&trait_node),
                 name,
                 line_number: trait_node.start_position().row + 1,
                 end_line: trait_node.end_position().row + 1,
@@ -481,6 +485,7 @@ impl LanguageExtractor for RustExtractor {
                     let class_context = self.get_class_context_rust(&node, source);
 
                     calls.push(CallData {
+                        receiver_chain: Vec::new(),
                         name: call_name,
                         full_name,
                         line_number: node.start_position().row + 1,
@@ -505,6 +510,7 @@ impl LanguageExtractor for RustExtractor {
                     let class_context = self.get_class_context_rust(&node, source);
 
                     calls.push(CallData {
+                        receiver_chain: Vec::new(),
                         name: format!("{}!", macro_name),
                         full_name: get_node_text(&macro_node, source).to_string(),
                         line_number: node.start_position().row + 1,

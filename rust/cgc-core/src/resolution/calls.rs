@@ -63,6 +63,9 @@ pub struct CallInput {
     pub line_number: usize,
     pub args: Vec<String>,
     pub inferred_obj_type: Option<String>,
+    /// Member path from the typed receiver root to this call
+    /// (`["findById()", "get()"]`), see `CallData::receiver_chain`.
+    pub receiver_chain: Vec<String>,
     pub context_name: Option<String>,
     pub context_type: Option<String>,
     pub context_line: Option<usize>,
@@ -81,6 +84,10 @@ pub struct FileCallData {
     pub class_methods: HashMap<String, HashSet<String>>,
     /// class name -> base type names (simple names)
     pub class_bases: HashMap<String, Vec<String>>,
+    /// (class, method) -> declared return type
+    pub method_returns: HashMap<(String, String), String>,
+    /// (class, field) -> declared field type
+    pub field_types: HashMap<(String, String), String>,
 }
 
 /// Repo-wide view of types, their methods and bases, used to resolve
@@ -97,6 +104,60 @@ pub struct TypeIndex {
     bases: HashMap<(String, String), Vec<String>>,
     /// simple base name -> (subtype, file) declaring it as a base
     subtypes: HashMap<String, Vec<(String, String)>>,
+    /// (type, file, method) -> return type
+    returns: HashMap<(String, String, String), String>,
+    /// (type, file, field) -> field type
+    fields: HashMap<(String, String, String), String>,
+}
+
+/// Outcome of following a receiver chain.
+enum ChainType {
+    /// The chain ends on a repo type: (type, declaring file)
+    Repo(String, String),
+    /// The chain ends on a type defined outside the repo
+    External,
+    /// Couldn't follow the chain
+    Unknown,
+}
+
+/// `Optional<Pet>` → ("Optional", ["Pet"]); `a.b.Foo` → ("Foo", []).
+fn split_generic(raw: &str) -> (String, Vec<String>) {
+    let raw = raw.trim().trim_end_matches("[]");
+    let (base, args) = match (raw.find('<'), raw.rfind('>')) {
+        (Some(l), Some(r)) if r > l => (&raw[..l], Some(&raw[l + 1..r])),
+        _ => (raw, None),
+    };
+    let base = base.trim().rsplit('.').next().unwrap_or("").to_string();
+    let mut out = Vec::new();
+    if let Some(args) = args {
+        let (mut depth, mut cur) = (0i32, String::new());
+        for ch in args.chars() {
+            match ch {
+                '<' => depth += 1,
+                '>' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(cur.trim().to_string());
+                    cur.clear();
+                    continue;
+                }
+                _ => {}
+            }
+            cur.push(ch);
+        }
+        out.push(cur.trim().to_string());
+    }
+    (base, out)
+}
+
+/// Element type exposed by well-known JDK wrappers for a member access:
+/// `Optional<T>.orElseThrow()` → T, `List<T>.get()` → T, `Map<K, V>.get()` → V.
+fn unwrap_container(base: &str, args: &[String], member: &str) -> Option<String> {
+    match (base, member) {
+        ("Optional", "get()" | "orElse()" | "orElseThrow()" | "orElseGet()") => args.first().cloned(),
+        ("List" | "ArrayList" | "LinkedList", "get()" | "getFirst()" | "getLast()") => args.first().cloned(),
+        ("Map" | "HashMap" | "LinkedHashMap" | "TreeMap", "get()" | "getOrDefault()") => args.last().cloned(),
+        _ => None,
+    }
 }
 
 impl TypeIndex {
@@ -108,6 +169,16 @@ impl TypeIndex {
                 let key = (class.clone(), f.path.clone());
                 if let Some(m) = f.class_methods.get(class) {
                     index.methods.insert(key.clone(), m.clone());
+                }
+                for ((c, m), ret) in &f.method_returns {
+                    if c == class {
+                        index.returns.insert((class.clone(), f.path.clone(), m.clone()), ret.clone());
+                    }
+                }
+                for ((c, fld), ty) in &f.field_types {
+                    if c == class {
+                        index.fields.insert((class.clone(), f.path.clone(), fld.clone()), ty.clone());
+                    }
                 }
                 if let Some(b) = f.class_bases.get(class) {
                     for base in b {
@@ -174,6 +245,96 @@ impl TypeIndex {
             }
         }
         out
+    }
+
+    /// `ty` (in `file`) and its ancestors, nearest first.
+    fn ancestors(&self, ty: &str, file: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut queue: std::collections::VecDeque<(String, String)> =
+            [(Self::simple(ty).to_string(), file.to_string())].into();
+        while let Some(key) = queue.pop_front() {
+            if out.contains(&key) || out.len() > 32 {
+                continue;
+            }
+            for base in self.bases.get(&key).into_iter().flatten() {
+                let b = Self::simple(base);
+                for bf in self.files.get(b).into_iter().flatten() {
+                    queue.push_back((b.to_string(), bf.clone()));
+                }
+            }
+            out.push(key);
+        }
+        out
+    }
+
+    /// File declaring `ty`, preferring `near`'s file, then its directory.
+    fn type_file(&self, ty: &str, near: &str) -> Option<String> {
+        let files = self.files.get(ty)?;
+        let dir = |p: &str| p.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
+        files
+            .iter()
+            .find(|f| f.as_str() == near)
+            .or_else(|| files.iter().find(|f| dir(f) == dir(near)))
+            .or_else(|| files.first())
+            .cloned()
+    }
+
+    /// Type of `member` ("m()" or field "f") on `ty`, searching its ancestors.
+    /// Undeclared accessors fall back to fields: record `r.x()` and Lombok
+    /// `getX()` / `isX()` read field `x`. Returns (raw type, declaring file).
+    fn member_type(&self, ty: &str, file: &str, member: &str) -> Option<(String, String)> {
+        let (name, is_call) = match member.strip_suffix("()") {
+            Some(n) => (n, true),
+            None => (member, false),
+        };
+        let getter_field = || -> Option<String> {
+            let rest = name.strip_prefix("get").or_else(|| name.strip_prefix("is"))?;
+            let mut chars = rest.chars();
+            let first = chars.next()?.to_ascii_lowercase();
+            Some(std::iter::once(first).chain(chars).collect())
+        };
+        for (t, f) in self.ancestors(ty, file) {
+            let field = |n: &str| self.fields.get(&(t.clone(), f.clone(), n.to_string())).cloned();
+            if is_call {
+                if self.methods.get(&(t.clone(), f.clone())).map_or(false, |m| m.contains(name)) {
+                    return self.returns.get(&(t.clone(), f.clone(), name.to_string())).map(|r| (r.clone(), f));
+                }
+                if let Some(ft) = field(name).or_else(|| getter_field().and_then(|g| field(&g))) {
+                    return Some((ft, f));
+                }
+            } else if let Some(ft) = field(name) {
+                return Some((ft, f));
+            }
+        }
+        None
+    }
+
+    /// Follow `chain` starting from type `root` (declared in `root_file`).
+    fn follow_chain(&self, root: &str, root_file: &str, chain: &[String]) -> ChainType {
+        let mut raw = root.to_string();
+        let mut near = root_file.to_string();
+        for member in chain {
+            let (base, args) = split_generic(&raw);
+            if let Some(inner) = unwrap_container(&base, &args, member) {
+                raw = inner;
+                continue;
+            }
+            let Some(file) = self.type_file(&base, &near) else { return ChainType::Unknown };
+            match self.member_type(&base, &file, member) {
+                Some((ty, declaring)) => {
+                    raw = ty;
+                    near = declaring;
+                }
+                None => return ChainType::Unknown,
+            }
+        }
+        let (base, _) = split_generic(&raw);
+        match self.type_file(&base, &near) {
+            Some(file) => ChainType::Repo(base, file),
+            // Short names (T, ID, E) are type parameters, not external types.
+            None if base.len() > 2 && base.starts_with(|c: char| c.is_ascii_uppercase()) => ChainType::External,
+            None => ChainType::Unknown,
+        }
     }
 
     pub fn declares(&self, ty: &str, file: &str) -> bool {
@@ -312,6 +473,7 @@ pub fn resolve_function_call(
         .inferred_obj_type
         .as_ref()
         .filter(|t| t.rsplit('.').next().map_or(false, |s| s.starts_with(|c: char| c.is_ascii_uppercase())))
+        .filter(|_| call.receiver_chain.is_empty())
         .filter(|_| !is_chained || (is_self_receiver && full_call.matches('.').count() == 2 && !full_call.contains('(')))
     {
         if let Some((type_file, exact)) = locate_type(obj_type, local_imports, imports_map) {
@@ -325,6 +487,31 @@ pub fn resolve_function_call(
                 // point at the receiver's type.
                 None => (type_file, 4),
             });
+        }
+    }
+
+    // 3c. Chained receiver `root.a().b.m()`: follow return/field types
+    if resolved.is_none() && !call.receiver_chain.is_empty() {
+        let root = call
+            .inferred_obj_type
+            .as_deref()
+            .filter(|t| t.rsplit('.').next().map_or(false, |s| s.starts_with(|c: char| c.is_ascii_uppercase())));
+        if let Some(root) = root {
+            let root_simple = root.rsplit('.').next().unwrap_or(root);
+            let root_file = locate_type(root, local_imports, imports_map)
+                .map(|(f, _)| f)
+                .unwrap_or_else(own);
+            match types.follow_chain(root_simple, &root_file, &call.receiver_chain) {
+                ChainType::Repo(ty, file) => {
+                    let found = types.find_method(&ty, &file, called_name, false);
+                    called_class = found.as_ref().map(|(c, _, _)| c.clone());
+                    dispatch_class = Some(ty);
+                    resolved = Some((found.map(|(_, f, _)| f).unwrap_or(file), 4));
+                }
+                // e.g. repo.findAll().stream(): target is outside the graph
+                ChainType::External => return None,
+                ChainType::Unknown => {}
+            }
         }
     }
 
@@ -654,6 +841,7 @@ mod tests {
             line_number: 10,
             args: vec![],
             inferred_obj_type: None,
+            receiver_chain: vec![],
             context_name: Some("caller_func".to_string()),
             context_type: Some("function_definition".to_string()),
             context_line: Some(5),
@@ -687,6 +875,7 @@ mod tests {
             line_number: 15,
             args: vec![],
             inferred_obj_type: None,
+            receiver_chain: vec![],
             context_name: Some("main".to_string()),
             context_type: Some("function_definition".to_string()),
             context_line: Some(1),
@@ -723,6 +912,7 @@ mod tests {
             line_number: 1,
             args: vec![],
             inferred_obj_type: None,
+            receiver_chain: vec![],
             context_name: None,
             context_type: None,
             context_line: None,
@@ -753,12 +943,15 @@ mod tests {
             local_imports: HashMap::new(),
             class_methods: HashMap::new(),
             class_bases: HashMap::new(),
+            method_returns: HashMap::new(),
+            field_types: HashMap::new(),
             calls: vec![CallInput {
                 name: "Helper".to_string(),
                 full_name: "Helper".to_string(),
                 line_number: 5,
                 args: vec![],
                 inferred_obj_type: None,
+                receiver_chain: vec![],
                 context_name: Some("main".to_string()),
                 context_type: Some("function_definition".to_string()),
                 context_line: Some(1),
@@ -790,6 +983,7 @@ mod tests {
             line_number: 10,
             args: vec![],
             inferred_obj_type: obj_type.map(|s| s.to_string()),
+            receiver_chain: vec![],
             context_name: Some(name.to_string()),
             context_type: Some("method_declaration".to_string()),
             context_line: Some(9),
@@ -879,6 +1073,8 @@ mod tests {
                 .iter()
                 .map(|(c, _, b)| (c.to_string(), b.iter().map(|s| s.to_string()).collect()))
                 .collect(),
+            method_returns: HashMap::new(),
+            field_types: HashMap::new(),
         }
     }
 
@@ -1026,5 +1222,61 @@ mod tests {
         let groups = build_function_call_groups(&files, &imports_map, &HashMap::new(), false);
         let targets: Vec<&str> = groups.fn_to_fn.iter().map(|r| r.called_file_path.as_str()).collect();
         assert_eq!(targets, vec!["/r/Entity.java"]);
+    }
+
+    fn chain_call(name: &str, root: &str, chain: &[&str]) -> CallInput {
+        let mut c = receiver_call(name, &format!("x.{}.{name}", chain.join(".")), Some(root));
+        c.receiver_chain = chain.iter().map(|s| s.to_string()).collect();
+        c
+    }
+
+    #[test]
+    fn test_chained_receivers_follow_return_and_field_types() {
+        let mut repo = file("/r/PetRepository.java", &[("PetRepository", &["findById", "findAll"], &[])], vec![]);
+        repo.method_returns.insert(("PetRepository".into(), "findById".into()), "Optional<Pet>".into());
+        repo.method_returns.insert(("PetRepository".into(), "findAll".into()), "List<Pet>".into());
+        let mut pet = file("/r/Pet.java", &[("Pet", &["vaccinate"], &[])], vec![]);
+        pet.field_types.insert(("Pet".into(), "owner".into()), "Customer".into());
+        let customer = file("/r/Customer.java", &[("Customer", &["notify"], &[])], vec![]);
+        let files = vec![repo, pet, customer];
+        let types = TypeIndex::build(&files);
+        let mut imports_map = HashMap::new();
+        for f in &files {
+            for c in &f.class_names {
+                imports_map.insert(c.clone(), vec![f.path.clone()]);
+            }
+        }
+        let resolve = |c: CallInput| {
+            resolve_function_call(&c, "/r/Svc.java", &HashSet::new(), &HashMap::new(), &imports_map, &types, false)
+        };
+        // repo.findById(id).orElseThrow().vaccinate()
+        let r = resolve(chain_call("vaccinate", "PetRepository", &["findById()", "orElseThrow()"])).unwrap();
+        assert_eq!((r.called_file_path.as_str(), r.tier), ("/r/Pet.java", 4));
+        // repo.findAll().get(0).getOwner().notify()  — Lombok getter → field
+        let r = resolve(chain_call("notify", "PetRepository", &["findAll()", "get()", "getOwner()"])).unwrap();
+        assert_eq!(r.called_file_path, "/r/Customer.java");
+        // pet.owner.notify() — field access
+        let r = resolve(chain_call("notify", "Pet", &["owner"])).unwrap();
+        assert_eq!(r.called_file_path, "/r/Customer.java");
+        // repo.findAll().stream(): ends on an out-of-repo type → dropped
+        assert!(resolve(chain_call("stream", "PetRepository", &["findAll()"])).is_none());
+    }
+
+    #[test]
+    fn test_single_dot_chain_uses_chain_not_root_type() {
+        // supplier("x").isActive() inside SupplierTest: the receiver is the
+        // helper's return type, not SupplierTest.
+        let mut t = file("/r/SupplierTest.java", &[("SupplierTest", &["supplier", "run"], &[])], vec![]);
+        t.method_returns.insert(("SupplierTest".into(), "supplier".into()), "Supplier".into());
+        let files = vec![t, file("/r/Supplier.java", &[("Supplier", &["isActive"], &[])], vec![])];
+        let types = TypeIndex::build(&files);
+        let mut imports_map = HashMap::new();
+        imports_map.insert("Supplier".to_string(), vec!["/r/Supplier.java".to_string()]);
+        imports_map.insert("SupplierTest".to_string(), vec!["/r/SupplierTest.java".to_string()]);
+        let mut call = receiver_call("isActive", "supplier(\"x\").isActive", Some("SupplierTest"));
+        call.receiver_chain = vec!["supplier()".to_string()];
+        let local: HashSet<String> = ["supplier".to_string(), "run".to_string()].into();
+        let r = resolve_function_call(&call, "/r/SupplierTest.java", &local, &HashMap::new(), &imports_map, &types, false).unwrap();
+        assert_eq!(r.called_file_path, "/r/Supplier.java");
     }
 }

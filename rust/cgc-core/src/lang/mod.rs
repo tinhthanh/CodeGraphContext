@@ -1,3 +1,72 @@
+/// Kotlin `enum class X`: an `enum` token somewhere under the modifiers.
+fn has_enum_modifier(node: &Node) -> bool {
+    fn contains_enum(n: &Node) -> bool {
+        n.kind() == "enum" || (0..n.child_count()).filter_map(|i| n.child(i)).any(|c| contains_enum(&c))
+    }
+    (0..node.child_count())
+        .filter_map(|i| node.child(i))
+        .filter(|c| c.kind() == "modifiers")
+        .any(|m| contains_enum(&m))
+}
+
+/// Map a type-declaration node to a language-neutral kind label
+/// (the Interface/Struct/Object/... node labels upstream CGC uses).
+pub fn class_kind(node: &Node) -> String {
+    // Some extractors hand over the declaration's name node; use its parent.
+    let parent;
+    let node = if matches!(
+        node.kind(),
+        "identifier" | "type_identifier" | "simple_identifier" | "name" | "constant" | "type_constructor"
+    ) {
+        match node.parent() {
+            Some(p) => {
+                parent = p;
+                &parent
+            }
+            None => node,
+        }
+    } else {
+        node
+    };
+    let token = |kw: &str| (0..node.child_count()).filter_map(|i| node.child(i)).any(|c| c.kind() == kw);
+    let kind = match node.kind() {
+        "interface_declaration" | "protocol_declaration" => "interface",
+        "enum_declaration" | "enum_item" | "enum_specifier" | "enum_definition" | "enum" => "enum",
+        "record_declaration" | "record_struct_declaration" => "record",
+        "annotation_type_declaration" => "annotation",
+        "struct_item" | "struct_specifier" | "struct_declaration" => "struct",
+        "trait_item" | "trait_declaration" | "trait_definition" => "trait",
+        "object_declaration" | "object_definition" => "object",
+        "companion_object" => "companion",
+        "union_item" | "union_specifier" => "union",
+        "type_alias_declaration" | "type_alias" | "type_item" => "type_alias",
+        "module" | "module_declaration" => "module",
+        "mixin_declaration" => "mixin",
+        "extension_declaration" => "extension",
+        "preproc_def" | "preproc_function_def" | "macro_definition" => "macro",
+        // Go: `type X struct {...}` / `type X interface {...}`
+        "type_declaration" | "type_spec" => {
+            let spec = if node.kind() == "type_spec" {
+                Some(*node)
+            } else {
+                (0..node.named_child_count()).filter_map(|i| node.named_child(i)).find(|c| c.kind() == "type_spec")
+            };
+            match spec.and_then(|s| s.child_by_field_name("type")).map(|t| t.kind()) {
+                Some("struct_type") => "struct",
+                Some("interface_type") => "interface",
+                _ => "type_alias",
+            }
+        }
+        // Kotlin `interface X` / `enum class X`, Swift `struct`/`enum`/`extension`
+        "class_declaration" if token("interface") => "interface",
+        "class_declaration" if token("struct") => "struct",
+        "class_declaration" if token("extension") => "extension",
+        "class_declaration" if token("enum") || has_enum_modifier(node) => "enum",
+        _ => "class",
+    };
+    kind.to_string()
+}
+
 pub mod python;
 pub mod javascript;
 pub mod typescript;
@@ -60,6 +129,11 @@ pub trait LanguageExtractor: Send + Sync {
     /// Dependency-injection points. Only languages with a DI convention
     /// (Java/Spring) implement this.
     fn find_injections(&self, _root: &Node, _source: &[u8]) -> Vec<InjectionData> {
+        Vec::new()
+    }
+
+    /// ORM mappings (entities, query annotations, repositories). Java only.
+    fn find_orm_mappings(&self, _root: &Node, _source: &[u8]) -> Vec<OrmMappingData> {
         Vec::new()
     }
 

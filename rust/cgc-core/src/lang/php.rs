@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{class_kind, get_node_text, get_parent_context, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -243,6 +243,7 @@ impl LanguageExtractor for PhpExtractor {
             let class_context = self.get_class_context_php(&func_node, source);
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -289,6 +290,7 @@ impl LanguageExtractor for PhpExtractor {
             let bases = self.extract_base_classes(&class_node, source);
 
             let mut class = ClassData {
+                kind: class_kind(&class_node),
                 name,
                 line_number: class_node.start_position().row + 1,
                 end_line: class_node.end_position().row + 1,
@@ -320,6 +322,7 @@ impl LanguageExtractor for PhpExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&iface_node),
                 name,
                 line_number: iface_node.start_position().row + 1,
                 end_line: iface_node.end_position().row + 1,
@@ -351,6 +354,7 @@ impl LanguageExtractor for PhpExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&trait_node),
                 name,
                 line_number: trait_node.start_position().row + 1,
                 end_line: trait_node.end_position().row + 1,
@@ -473,6 +477,7 @@ impl LanguageExtractor for PhpExtractor {
             let class_context = self.get_class_context_php(&node, source);
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: call_name,
                 full_name,
                 line_number,

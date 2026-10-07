@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, LanguageExtractor};
+use super::{class_kind, get_node_text, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -366,6 +366,7 @@ impl LanguageExtractor for KotlinExtractor {
             let class_context = self.get_class_context_kotlin(&func_node, source);
 
             let mut func = FunctionData {
+                return_type: None,
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: func_node.end_position().row + 1,
@@ -423,6 +424,7 @@ impl LanguageExtractor for KotlinExtractor {
             let (context, _, _) = self.get_parent_context_kotlin(&class_node, source);
 
             let mut class = ClassData {
+                kind: class_kind(&class_node),
                 name,
                 line_number: Self::name_line(&class_node),
                 end_line: class_node.end_position().row + 1,
@@ -461,6 +463,7 @@ impl LanguageExtractor for KotlinExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&obj_node),
                 name,
                 line_number: Self::name_line(&obj_node),
                 end_line: obj_node.end_position().row + 1,
@@ -594,6 +597,7 @@ impl LanguageExtractor for KotlinExtractor {
             let class_context = self.get_class_context_kotlin(&node, source);
 
             calls.push(CallData {
+                receiver_chain: Vec::new(),
                 name: call_name,
                 full_name,
                 line_number: node.start_position().row + 1,

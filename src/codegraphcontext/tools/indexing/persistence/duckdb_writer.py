@@ -82,7 +82,8 @@ class DuckDBGraphWriter:
         c.execute("""CREATE TABLE IF NOT EXISTS classes (
             uid VARCHAR PRIMARY KEY, name VARCHAR, path VARCHAR,
             line_number INTEGER, docstring VARCHAR DEFAULT '',
-            bases VARCHAR DEFAULT '', decorators VARCHAR DEFAULT '')""")
+            bases VARCHAR DEFAULT '', decorators VARCHAR DEFAULT '',
+            kind VARCHAR DEFAULT 'class')""")
         # Dependency injection: injector class -> injected bean type
         # (Spring @Autowired/@Inject fields, Lombok final fields, constructors)
         c.execute("""CREATE TABLE IF NOT EXISTS injections (
@@ -109,7 +110,23 @@ class DuckDBGraphWriter:
             caller_path VARCHAR DEFAULT '', called_path VARCHAR DEFAULT '',
             line_number INTEGER DEFAULT 0, full_call_name VARCHAR DEFAULT '',
             confidence VARCHAR DEFAULT 'EXTRACTED',
-            resolution_tier INTEGER DEFAULT 0)""")
+            resolution_tier INTEGER DEFAULT 0,
+            receiver_type VARCHAR DEFAULT '')""")
+        # ORM: entity -> table, repository -> entity, code -> table access
+        c.execute("""CREATE TABLE IF NOT EXISTS orm_entities (
+            entity_class VARCHAR, entity_path VARCHAR, table_name VARCHAR,
+            schema VARCHAR DEFAULT '', datastore VARCHAR DEFAULT '',
+            line_number INTEGER DEFAULT 0)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS orm_repositories (
+            repository VARCHAR, repository_path VARCHAR, entity_class VARCHAR,
+            entity_path VARCHAR DEFAULT '', table_name VARCHAR DEFAULT '',
+            schema VARCHAR DEFAULT '')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS db_access (
+            caller_class VARCHAR DEFAULT '', caller_name VARCHAR DEFAULT '',
+            caller_path VARCHAR, line_number INTEGER DEFAULT 0,
+            table_name VARCHAR, schema VARCHAR DEFAULT '',
+            operation VARCHAR, via VARCHAR, repository VARCHAR DEFAULT '',
+            method VARCHAR DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS inheritance (
             child_uid VARCHAR, parent_uid VARCHAR,
             child_name VARCHAR DEFAULT '', parent_name VARCHAR DEFAULT '',
@@ -167,9 +184,10 @@ class DuckDBGraphWriter:
         fn_cx = []; fn_rt = []; fn_doc = []; fn_cc = []; fn_async = []
         fn_bstart = []; fn_bend = []; fn_dec = []
         # Classes
-        cl_uid = []; cl_name = []; cl_path = []; cl_line = []; cl_doc = []; cl_bases = []; cl_dec = []
+        cl_uid = []; cl_name = []; cl_path = []; cl_line = []; cl_doc = []; cl_bases = []; cl_dec = []; cl_kind = []
         # Injections (target path resolved after all classes are known)
         inj_rows = []  # (injector_class, injector_rel, injected_type, field, line, kind, stereotype, imports)
+        orm_rows = []  # (rel path, orm mapping dict)
         # Variables
         v_uid = []; v_name = []; v_path = []; v_line = []; v_type = []
         # Parameters
@@ -246,7 +264,11 @@ class DuckDBGraphWriter:
                     bases = cls.get("bases", [])
                     cl_bases.append(",".join(str(b) for b in bases) if bases else "")
                     cl_dec.append("\n".join(cls.get("decorators", []) or []))
+                    cl_kind.append(cls.get("kind") or "class")
                     fc_fp.append(rel); fc_uid.append(uid); fc_type.append("Class")
+
+            for m in r.get("orm_mappings") or []:
+                orm_rows.append((rel, m))
 
             # Injections
             if r.get("injections"):
@@ -287,7 +309,7 @@ class DuckDBGraphWriter:
         # ── CALLS edges ──────────────────────────────────────────────
         c_caller = []; c_called = []; c_ct = []; c_cdt = []
         c_cn = []; c_dn = []; c_cp = []; c_dp = []
-        c_ln = []; c_fcn = []; c_conf = []; c_tier = []
+        c_ln = []; c_fcn = []; c_conf = []; c_tier = []; c_recv = []
         edge_labels = [
             ("Function", "Function"), ("Function", "Class"),
             ("Class", "Function"), ("Class", "Class"),
@@ -320,6 +342,7 @@ class DuckDBGraphWriter:
                 # tier fall back to the same-file heuristic.
                 tier = e.get("resolution_tier", 0)
                 c_tier.append(tier)
+                c_recv.append(e.get("receiver_type") or "")
                 c_conf.append(e.get("confidence") or (
                     "EXTRACTED" if caller_path == called_path else "INFERRED"))
 
@@ -373,7 +396,7 @@ class DuckDBGraphWriter:
         pq.write_table(pa.table({
             "uid": cl_uid, "name": cl_name, "path": cl_path,
             "line_number": cl_line, "docstring": cl_doc, "bases": cl_bases,
-            "decorators": cl_dec,
+            "decorators": cl_dec, "kind": cl_kind,
         }), f"{pq_dir}/classes.parquet")
 
         pq.write_table(pa.table({
@@ -404,6 +427,7 @@ class DuckDBGraphWriter:
             "line_number": c_ln, "full_call_name": c_fcn,
             "confidence": c_conf,
             "resolution_tier": pa.array(c_tier, type=pa.int32()),
+            "receiver_type": c_recv,
         }), f"{pq_dir}/calls.parquet")
 
         if inh_child:
@@ -423,7 +447,7 @@ class DuckDBGraphWriter:
         c = self._conn
 
         # Drop existing data
-        for tbl in ["operational_params", "rationales", "routes", "execution_flows", "calls", "inheritance", "injections", "file_contains",
+        for tbl in ["operational_params", "rationales", "routes", "execution_flows", "calls", "inheritance", "injections", "orm_entities", "orm_repositories", "db_access", "file_contains",
                      "imports", "parameters", "variables", "classes", "functions",
                      "directories", "files", "modules", "repository"]:
             c.execute(f"DROP TABLE IF EXISTS {tbl}")
@@ -463,6 +487,9 @@ class DuckDBGraphWriter:
                 "INSERT INTO injections VALUES (?,?,?,?,?,?,?,?)",
                 _resolve_injection_targets(inj_rows, cl_name, cl_path),
             )
+
+        if orm_rows:
+            _write_orm(c, orm_rows)
 
         # Indexes for query performance
         c.execute("CREATE INDEX IF NOT EXISTS idx_fn_name ON functions(name)")
@@ -861,3 +888,121 @@ def _resolve_injection_targets(inj_rows, class_names, class_paths):
                 target = next((p for p in cands if os.path.dirname(p) == pkg_dir), "")
         out.append((injector, rel, typ, target, field, line, kind, stereotype))
     return out
+
+
+# Spring Data CRUD / derived-query method prefixes (lower-case). Writes first:
+# "saveAndFlush" must not match a read prefix.
+_REPO_WRITE_PREFIXES = (
+    "save", "insert", "update", "delete", "remove", "flush", "create", "upsert",
+)
+_REPO_READ_PREFIXES = (
+    "find", "read", "get", "query", "search", "count", "exists", "stream", "fetch", "load",
+)
+_SPRING_DATA_BASES = {
+    "JpaRepository", "CrudRepository", "PagingAndSortingRepository", "ListCrudRepository",
+    "ListPagingAndSortingRepository", "Repository", "MongoRepository", "ReactiveMongoRepository",
+    "CassandraRepository", "ReactiveCassandraRepository", "R2dbcRepository",
+    "JpaSpecificationExecutor", "QuerydslPredicateExecutor", "CoroutineCrudRepository",
+}
+
+
+def _split_table(name: str) -> Tuple[str, str]:
+    """`schema.table` -> (table, schema)."""
+    schema, _, table = name.rpartition(".")
+    return table, schema
+
+
+def _write_orm(c, orm_rows) -> None:
+    """Fill orm_entities, orm_repositories and db_access.
+
+    db_access combines two sources:
+    - query: tables named in a repository method's @Query / MyBatis SQL
+      (JPQL entity names mapped to their tables);
+    - repository: resolved calls whose receiver is a repository, e.g.
+      petRepository.save(...) / findByOwner(...) -> the entity's table, with
+      READ/WRITE from the Spring Data method name (or the method's @Query).
+    """
+    entities = {}  # class -> (path, table, schema, datastore, line)
+    repos_raw = []
+    queries = []
+    for rel, m in orm_rows:
+        kind = m.get("kind")
+        if kind == "entity" and m.get("tables"):
+            entities.setdefault(m["class_name"], (
+                rel, m["tables"][0], m.get("schema") or "", m.get("datastore") or "", m.get("line_number", 0)))
+        elif kind == "repository":
+            repos_raw.append((rel, m))
+        elif kind == "query":
+            queries.append((rel, m))
+
+    c.executemany("INSERT INTO orm_entities VALUES (?,?,?,?,?,?)", [
+        (cls, p, table, schema, store, line) for cls, (p, table, schema, store, line) in entities.items()
+    ])
+
+    repos = {}  # repository -> (path, entity, table, schema)
+    for rel, m in repos_raw:
+        repo, base, ent = m["class_name"], m.get("base") or "", m.get("entity") or ""
+        if ent not in entities or repo in repos:
+            continue
+        if base in _SPRING_DATA_BASES or base.endswith("Repository") or repo.endswith("Repository"):
+            _, table, schema, _, _ = entities[ent]
+            repos[repo] = (rel, ent, table, schema)
+    c.executemany("INSERT INTO orm_repositories VALUES (?,?,?,?,?,?)", [
+        (repo, p, ent, entities[ent][0], table, schema) for repo, (p, ent, table, schema) in repos.items()
+    ])
+
+    def query_tables(m, repo_entity=None):
+        out = []
+        for t in m.get("tables") or []:
+            if m.get("native"):
+                table, schema = _split_table(t)
+                out.append((table, schema))
+            elif t in entities:  # JPQL entity name
+                out.append((entities[t][1], entities[t][2]))
+            elif t == "entityName" and repo_entity in entities:  # SpEL #{#entityName}
+                out.append((entities[repo_entity][1], entities[repo_entity][2]))
+        return out
+
+    # Repository -> its generic base interface (for queries declared on a
+    # shared base such as TenantAwareRepository<E>)
+    repo_base = {m["class_name"]: m.get("base") or "" for _, m in repos_raw}
+    queries_by_key = {(m["class_name"], m.get("method_name") or ""): m for _, m in queries}
+
+    access = []
+    repo_queries = {}  # (repository, method) -> [(table, schema, op)]
+    for rel, m in queries:
+        op = m.get("operation") or "READ"
+        tables = query_tables(m)
+        repo_queries[(m["class_name"], m.get("method_name") or "")] = [(t, s, op) for t, s in tables]
+        for table, schema in tables:
+            access.append((m["class_name"], m.get("method_name") or "", rel, m.get("line_number", 0),
+                           table, schema, op, "query", m["class_name"], m.get("method_name") or ""))
+
+    if repos:
+        names = list(repos)
+        rows = c.execute(
+            "SELECT caller_name, caller_path, line_number, called_name, receiver_type FROM calls "
+            "WHERE confidence <> 'AMBIGUOUS' AND receiver_type IN (SELECT unnest(?))", [names]
+        ).fetchall()
+        for caller, caller_path, line, method, repo in rows:
+            declared = repo_queries.get((repo, method))
+            base_query = queries_by_key.get((repo_base.get(repo, ""), method))
+            if not declared and base_query:
+                op = base_query.get("operation") or "READ"
+                declared = [(t, s, op) for t, s in query_tables(base_query, repos[repo][1])]
+            if declared:
+                for table, schema, op in declared:
+                    access.append(("", caller or "", caller_path, line, table, schema, op, "repository", repo, method))
+                continue
+            low = (method or "").lower()
+            if low.startswith(_REPO_WRITE_PREFIXES):
+                op = "WRITE"
+            elif low.startswith(_REPO_READ_PREFIXES):
+                op = "READ"
+            else:
+                continue
+            _, _, table, schema = repos[repo]
+            access.append(("", caller or "", caller_path, line, table, schema, op, "repository", repo, method))
+
+    if access:
+        c.executemany("INSERT INTO db_access VALUES (?,?,?,?,?,?,?,?,?,?)", list(dict.fromkeys(access)))
