@@ -464,23 +464,10 @@ impl LanguageExtractor for PythonExtractor {
                     };
                     let module_name = get_node_text(&module_name_node, source);
 
-                    let import_list_node = match node.child_by_field_name("name") {
-                        Some(n) => n,
-                        None => continue,
-                    };
-
-                    // Collect import items: either the node itself is the import,
-                    // or it's a container with multiple children
-                    let items: Vec<Node> = match import_list_node.kind() {
-                        "aliased_import" | "dotted_name" | "identifier" => {
-                            vec![import_list_node]
-                        }
-                        _ => {
-                            (0..import_list_node.child_count())
-                                .filter_map(|i| import_list_node.child(i))
-                                .collect()
-                        }
-                    };
+                    // children_by_field_name returns ALL imported names;
+                    // child_by_field_name would only return the first one.
+                    let mut cursor = node.walk();
+                    let items: Vec<Node> = node.children_by_field_name("name", &mut cursor).collect();
 
                     for child in items {
                         let (imported_name, alias) = if child.kind() == "aliased_import" {
@@ -772,6 +759,24 @@ from collections import OrderedDict as OD
         assert_eq!(imports[2].full_import_name, "pathlib.Path");
         assert_eq!(imports[3].name, "OrderedDict");
         assert_eq!(imports[3].alias.as_deref(), Some("OD"));
+    }
+
+    #[test]
+    fn test_from_import_multiple_names() {
+        let code = r#"
+from a import b, c as x
+from m import (
+    p,
+    q,
+)
+"#;
+        let (tree, source) = parse_source(code);
+        let ext = PythonExtractor;
+        let imports = ext.find_imports(&tree.root_node(), &source);
+        let full: Vec<&str> = imports.iter().map(|i| i.full_import_name.as_str()).collect();
+        assert_eq!(full, vec!["a.b", "a.c", "m.p", "m.q"]);
+        assert_eq!(imports[1].name, "c");
+        assert_eq!(imports[1].alias.as_deref(), Some("x"));
     }
 
     #[test]
