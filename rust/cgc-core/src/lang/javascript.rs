@@ -215,17 +215,100 @@ impl JavaScriptExtractor {
                         }
                     }
                 }
-                "rest_pattern" => {
-                    if let Some(arg) = child.child_by_field_name("argument") {
-                        if arg.kind() == "identifier" {
-                            params.push(format!("...{}", get_node_text(&arg, source)));
-                        }
+                "rest_pattern" | "rest_element" => {
+                    // `...args`: the grammar has no field here, so fall back to
+                    // the identifier child.
+                    let name_node = child
+                        .child_by_field_name("argument")
+                        .or_else(|| child.child_by_field_name("name"))
+                        .or_else(|| {
+                            (0..child.child_count())
+                                .filter_map(|j| child.child(j))
+                                .find(|c| c.kind() == "identifier")
+                        });
+                    if let Some(arg) = name_node {
+                        params.push(format!("...{}", get_node_text(&arg, source)));
                     }
+                }
+                // Destructured params: one entry per parameter position so
+                // arity is unchanged, listing the local names it binds.
+                "object_pattern" => {
+                    let names = Self::pattern_binding_names(&child, source);
+                    params.push(if names.is_empty() {
+                        "{...}".to_string()
+                    } else {
+                        format!("{{{}}}", names.join(", "))
+                    });
+                }
+                "array_pattern" => {
+                    let names = Self::pattern_binding_names(&child, source);
+                    params.push(if names.is_empty() {
+                        "[...]".to_string()
+                    } else {
+                        format!("[{}]", names.join(", "))
+                    });
                 }
                 _ => {}
             }
         }
         params
+    }
+
+    /// Local names a destructuring pattern binds, in source order.
+    /// `{a, b: local, c = 1, ...rest}` → ["a", "local", "c", "...rest"].
+    fn pattern_binding_names(pattern: &Node, source: &[u8]) -> Vec<String> {
+        fn walk(node: &Node, source: &[u8], names: &mut Vec<String>) {
+            for i in 0..node.named_child_count() {
+                let child = match node.named_child(i) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                match child.kind() {
+                    "identifier" | "shorthand_property_identifier_pattern" => {
+                        names.push(get_node_text(&child, source).to_string());
+                    }
+                    "pair_pattern" => {
+                        // { a: local } — the binding is the value, not the key
+                        if let Some(value) = child.child_by_field_name("value") {
+                            if value.kind() == "identifier" {
+                                names.push(get_node_text(&value, source).to_string());
+                            } else {
+                                walk(&value, source, names);
+                            }
+                        }
+                    }
+                    "object_assignment_pattern" | "assignment_pattern" => {
+                        // { a = 1 } / [a = 1]
+                        let target = child
+                            .child_by_field_name("left")
+                            .or_else(|| child.named_child(0));
+                        if let Some(t) = target {
+                            if matches!(
+                                t.kind(),
+                                "identifier" | "shorthand_property_identifier_pattern"
+                            ) {
+                                names.push(get_node_text(&t, source).to_string());
+                            } else {
+                                walk(&t, source, names);
+                            }
+                        }
+                    }
+                    "object_pattern" | "array_pattern" => walk(&child, source, names),
+                    "rest_pattern" | "rest_element" => {
+                        if let Some(inner) = (0..child.child_count())
+                            .filter_map(|j| child.child(j))
+                            .find(|c| c.kind() == "identifier")
+                        {
+                            names.push(format!("...{}", get_node_text(&inner, source)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut names = Vec::new();
+        walk(pattern, source, &mut names);
+        names
     }
 
     /// Process an import_clause node, which wraps the actual import specifiers.
@@ -1001,5 +1084,19 @@ class Widget {
             ]
         );
         assert!(imports.iter().all(|i| i.full_import_name == "react"));
+    }
+
+    #[test]
+    fn test_extract_rest_and_destructured_params() {
+        let code = r#"
+function f(a, ...rest) {}
+function Button({ label, onClick: handle, size = 1 }, [x, y], opts = {}) {}
+"#;
+        let (tree, source) = parse_source(code);
+        let funcs = JavaScriptExtractor.find_functions(&tree.root_node(), &source, false);
+        let f = funcs.iter().find(|f| f.name == "f").unwrap();
+        assert_eq!(f.args, vec!["a", "...rest"]);
+        let b = funcs.iter().find(|f| f.name == "Button").unwrap();
+        assert_eq!(b.args, vec!["{label, handle, size}", "[x, y]", "opts"]);
     }
 }
