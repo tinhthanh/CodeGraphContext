@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{class_kind, get_node_text, get_parent_context, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -457,6 +457,7 @@ impl LanguageExtractor for GoExtractor {
                 .unwrap_or_default();
 
             let mut class = ClassData {
+                kind: class_kind(&type_decl),
                 name,
                 line_number: type_decl.start_position().row + 1,
                 end_line: type_decl.end_position().row + 1,
@@ -495,6 +496,7 @@ impl LanguageExtractor for GoExtractor {
                 .unwrap_or_default();
 
             let mut class = ClassData {
+                kind: class_kind(&type_decl),
                 name,
                 line_number: type_decl.start_position().row + 1,
                 end_line: type_decl.end_position().row + 1,

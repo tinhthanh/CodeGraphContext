@@ -98,6 +98,7 @@ fn function_to_py(py: Python<'_>, f: &FunctionData) -> PyResult<PyObject> {
 fn class_to_py(py: Python<'_>, c: &ClassData) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     dict.set_item("name", &c.name)?;
+    dict.set_item("kind", &c.kind)?;
     dict.set_item("line_number", c.line_number)?;
     dict.set_item("end_line", c.end_line)?;
     dict.set_item("bases", &c.bases)?;

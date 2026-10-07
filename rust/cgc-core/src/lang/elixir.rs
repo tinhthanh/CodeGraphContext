@@ -1,7 +1,7 @@
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, LanguageExtractor};
+use super::{class_kind, get_node_text, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -319,6 +319,7 @@ impl ElixirExtractor {
                     if let Some(name) = module_name {
                         if has_do_block {
                             let mut class = ClassData {
+                                kind: class_kind(&node),
                                 name,
                                 line_number: node.start_position().row + 1,
                                 end_line: node.end_position().row + 1,

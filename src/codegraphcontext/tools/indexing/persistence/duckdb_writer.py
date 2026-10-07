@@ -82,7 +82,8 @@ class DuckDBGraphWriter:
         c.execute("""CREATE TABLE IF NOT EXISTS classes (
             uid VARCHAR PRIMARY KEY, name VARCHAR, path VARCHAR,
             line_number INTEGER, docstring VARCHAR DEFAULT '',
-            bases VARCHAR DEFAULT '', decorators VARCHAR DEFAULT '')""")
+            bases VARCHAR DEFAULT '', decorators VARCHAR DEFAULT '',
+            kind VARCHAR DEFAULT 'class')""")
         # Dependency injection: injector class -> injected bean type
         # (Spring @Autowired/@Inject fields, Lombok final fields, constructors)
         c.execute("""CREATE TABLE IF NOT EXISTS injections (
@@ -167,7 +168,7 @@ class DuckDBGraphWriter:
         fn_cx = []; fn_rt = []; fn_doc = []; fn_cc = []; fn_async = []
         fn_bstart = []; fn_bend = []; fn_dec = []
         # Classes
-        cl_uid = []; cl_name = []; cl_path = []; cl_line = []; cl_doc = []; cl_bases = []; cl_dec = []
+        cl_uid = []; cl_name = []; cl_path = []; cl_line = []; cl_doc = []; cl_bases = []; cl_dec = []; cl_kind = []
         # Injections (target path resolved after all classes are known)
         inj_rows = []  # (injector_class, injector_rel, injected_type, field, line, kind, stereotype, imports)
         # Variables
@@ -246,6 +247,7 @@ class DuckDBGraphWriter:
                     bases = cls.get("bases", [])
                     cl_bases.append(",".join(str(b) for b in bases) if bases else "")
                     cl_dec.append("\n".join(cls.get("decorators", []) or []))
+                    cl_kind.append(cls.get("kind") or "class")
                     fc_fp.append(rel); fc_uid.append(uid); fc_type.append("Class")
 
             # Injections
@@ -373,7 +375,7 @@ class DuckDBGraphWriter:
         pq.write_table(pa.table({
             "uid": cl_uid, "name": cl_name, "path": cl_path,
             "line_number": cl_line, "docstring": cl_doc, "bases": cl_bases,
-            "decorators": cl_dec,
+            "decorators": cl_dec, "kind": cl_kind,
         }), f"{pq_dir}/classes.parquet")
 
         pq.write_table(pa.table({

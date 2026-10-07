@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{class_kind, get_node_text, get_parent_context, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -304,6 +304,7 @@ impl LanguageExtractor for CSharpExtractor {
             let (context, _, _) = self.get_parent_context_csharp(&class_node, source);
 
             let mut class = ClassData {
+                kind: class_kind(&class_node),
                 name,
                 line_number: class_node.start_position().row + 1,
                 end_line: class_node.end_position().row + 1,
@@ -336,6 +337,7 @@ impl LanguageExtractor for CSharpExtractor {
             let bases = self.extract_base_list(&iface_node, source);
 
             let mut class = ClassData {
+                kind: class_kind(&iface_node),
                 name,
                 line_number: iface_node.start_position().row + 1,
                 end_line: iface_node.end_position().row + 1,
@@ -368,6 +370,7 @@ impl LanguageExtractor for CSharpExtractor {
             let bases = self.extract_base_list(&struct_node, source);
 
             let mut class = ClassData {
+                kind: class_kind(&struct_node),
                 name,
                 line_number: struct_node.start_position().row + 1,
                 end_line: struct_node.end_position().row + 1,
@@ -399,6 +402,7 @@ impl LanguageExtractor for CSharpExtractor {
             let name = get_node_text(&node, source).to_string();
 
             let mut class = ClassData {
+                kind: class_kind(&enum_node),
                 name,
                 line_number: enum_node.start_position().row + 1,
                 end_line: enum_node.end_position().row + 1,

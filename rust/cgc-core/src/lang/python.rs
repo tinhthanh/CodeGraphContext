@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use super::{get_node_text, get_parent_context, LanguageExtractor};
+use super::{class_kind, get_node_text, get_parent_context, LanguageExtractor};
 use crate::types::*;
 
 const COMPLEXITY_TYPES: &[&str] = &[
@@ -410,6 +410,7 @@ impl LanguageExtractor for PythonExtractor {
             );
 
             let mut class = ClassData {
+                kind: class_kind(&node),
                 name,
                 line_number: node.start_position().row + 1,
                 end_line: class_node.end_position().row + 1,
