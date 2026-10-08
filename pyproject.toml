@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "codegraphcontext-rust"
-version = "0.9.22"
+version = "0.9.23"
 description = "Rust-accelerated code indexing engine for CodeGraphContext. 19 languages, 5-18x faster parsing via tree-sitter + rayon."
 authors = [
     { name = "Shashank Shekhar Singh", email = "shashankshekharsingh1205@gmail.com" },
@@ -26,33 +26,42 @@ classifiers = [
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
+# Core: what the Rust engine + DuckDB pipeline (cgc-wiki index, wiki-forge)
+# imports. The rest of the original CodeGraphContext stack (cgc CLI, MCP
+# server, Neo4j/FalkorDB/Kuzu backends, watchers) is in the `full` extra.
 dependencies = [
+    "duckdb>=1.0",
+    "pathspec>=0.12.1",
+    "rich>=13.7.0",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# Faster bulk loads (Parquet/Arrow staging instead of CSV). Output is identical.
+fast = ["pyarrow>=14.0"]
+# Original CodeGraphContext features: `cgc` CLI, MCP server, graph-DB backends.
+#   pip install "codegraphcontext-rust[full]"
+full = [
     "neo4j>=5.15.0",
     "watchdog>=3.0.0",
     "stdlibs>=2023.11.18",
     "typer[all]>=0.9.0",
-    "rich>=13.7.0",
     "inquirerpy>=0.3.4",
     "python-dotenv>=1.0.0",
     "tree-sitter>=0.21.0",
     "tree-sitter-language-pack>=0.6.0",
     "tree-sitter-c-sharp>=0.21.0",
-    "pyyaml",
     "nbformat",
     "nbconvert>=7.16.6",
-    "pathspec>=0.12.1",
     "falkordb>=0.1.0",
     "requests>=2.28.0",
     "falkordblite>=0.1.0; sys_platform != 'win32' and python_version >= '3.12'",
     "kuzu>=0.4.0; sys_platform == 'win32' or (sys_platform != 'win32' and python_version >= '3.10' and python_version < '3.12')",
     "fastapi>=0.100.0",
     "uvicorn>=0.22.0",
-    # DuckDB pipeline (cgc-wiki index, DuckDBGraphWriter): bulk loads via Arrow/Parquet
-    "duckdb>=1.0",
-    "pyarrow>=14.0"
+    # Parquet bulk loader of the Kuzu backend (tools/indexing/persistence/parquet_loader.py)
+    "pyarrow>=14.0",
 ]
-
-[project.optional-dependencies]
 parsing = [
     "tree-sitter>=0.21.0",
     "tree-sitter-language-pack>=0.6.0",
@@ -71,8 +80,8 @@ dev = [
 "Upstream" = "https://github.com/CodeGraphContext/CodeGraphContext"
 
 [project.scripts]
-cgc = "codegraphcontext.cli.main:app"
-codegraphcontext = "codegraphcontext.cli.main:app"
+cgc = "codegraphcontext.cli.entry:main"
+codegraphcontext = "codegraphcontext.cli.entry:main"
 cgc-wiki = "codegraphcontext.tools.indexing.cgc_wiki_cli:main"
 
 [tool.maturin]

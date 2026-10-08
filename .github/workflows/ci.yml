@@ -47,3 +47,15 @@ jobs:
           assert RUST_AVAILABLE
           print(f'Build OK: Python ${{ matrix.python }}')
           "
+          # The core install (no extras) must run the full DuckDB pipeline:
+          # catches imports of packages that only live in the `full` extra.
+          mkdir -p /tmp/cgc-smoke/src && cd /tmp/cgc-smoke
+          printf 'def helper():\n    return 1\n\ndef main():\n    return helper()\n' > src/app.py
+          cgc-wiki index . --output out
+          python -c "
+          import duckdb
+          c = duckdb.connect('out/graph.duckdb', read_only=True)
+          n = c.execute('select count(*) from calls').fetchone()[0]
+          assert n > 0, n
+          print('cgc-wiki index OK (core deps only):', n, 'calls')
+          "

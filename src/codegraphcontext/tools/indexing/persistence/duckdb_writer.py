@@ -177,8 +177,6 @@ class DuckDBGraphWriter:
 
         Returns dict of counts: {files, functions, classes, variables, calls, ...}
         """
-        import pyarrow as pa
-        import pyarrow.parquet as pq
 
         repo_path_obj = Path(repo_path).resolve()
         total = len(parsed_results)
@@ -382,78 +380,78 @@ class DuckDBGraphWriter:
             inh_cn.append(child_name); inh_pn.append(parent_name)
             inh_cp.append(child_path); inh_pp.append(parent_path)
 
-        # ── Write Parquet ────────────────────────────────────────────
+        # ── Stage tables for bulk load (Parquet via pyarrow if installed, else CSV)
         _t_pq = time.perf_counter()
         pq_dir = tempfile.mkdtemp(prefix="cgc_pq_")
 
-        pq.write_table(pa.table({
+        _stage({
             "path": f_path, "name": f_name, "relative_path": f_rel, "is_dependency": f_dep,
-        }), f"{pq_dir}/files.parquet")
+        }, f"{pq_dir}/files")
 
         if dir_set:
             d_paths = list(dir_set.keys())
             d_names = [dir_set[p][0] for p in d_paths]
             d_parents = [dir_set[p][1] for p in d_paths]
-            pq.write_table(pa.table({
+            _stage({
                 "path": d_paths, "name": d_names, "parent_path": d_parents,
-            }), f"{pq_dir}/directories.parquet")
+            }, f"{pq_dir}/directories")
 
-        pq.write_table(pa.table({
+        _stage({
             "uid": fn_uid, "name": fn_name, "path": fn_path, "line_number": fn_line,
             "complexity": fn_cx, "return_type": fn_rt, "docstring": fn_doc,
             "class_context": fn_cc, "is_async": fn_async,
             "body_start_line": fn_bstart, "body_end_line": fn_bend,
             "decorators": fn_dec,
-        }), f"{pq_dir}/functions.parquet")
+        }, f"{pq_dir}/functions")
 
-        pq.write_table(pa.table({
+        _stage({
             "uid": cl_uid, "name": cl_name, "path": cl_path,
             "line_number": cl_line, "docstring": cl_doc, "bases": cl_bases,
             "decorators": cl_dec, "kind": cl_kind,
-        }), f"{pq_dir}/classes.parquet")
+        }, f"{pq_dir}/classes")
 
-        pq.write_table(pa.table({
+        _stage({
             "uid": v_uid, "name": v_name, "path": v_path,
             "line_number": v_line, "type": v_type,
-        }), f"{pq_dir}/variables.parquet")
+        }, f"{pq_dir}/variables")
 
         if p_uid:
-            pq.write_table(pa.table({
+            _stage({
                 "uid": p_uid, "name": p_name, "path": p_path,
                 "function_uid": p_func_uid, "function_line_number": p_func_line,
-            }), f"{pq_dir}/parameters.parquet")
+            }, f"{pq_dir}/parameters")
 
-        pq.write_table(pa.table({
+        _stage({
             "file_path": im_fp, "module_name": im_mod, "imported_name": im_name,
             "alias": im_alias, "full_import_name": im_full, "line_number": im_line,
-        }), f"{pq_dir}/imports.parquet")
+        }, f"{pq_dir}/imports")
 
-        pq.write_table(pa.table({
+        _stage({
             "file_path": fc_fp, "symbol_uid": fc_uid, "symbol_type": fc_type,
-        }), f"{pq_dir}/file_contains.parquet")
+        }, f"{pq_dir}/file_contains")
 
-        pq.write_table(pa.table({
+        _stage({
             "caller_uid": c_caller, "called_uid": c_called,
             "caller_type": c_ct, "called_type": c_cdt,
             "caller_name": c_cn, "called_name": c_dn,
             "caller_path": c_cp, "called_path": c_dp,
             "line_number": c_ln, "full_call_name": c_fcn,
             "confidence": c_conf,
-            "resolution_tier": pa.array(c_tier, type=pa.int32()),
+            "resolution_tier": c_tier,
             "receiver_type": c_recv,
-        }), f"{pq_dir}/calls.parquet")
+        }, f"{pq_dir}/calls")
 
         if inh_child:
-            pq.write_table(pa.table({
+            _stage({
                 "child_uid": inh_child, "parent_uid": inh_parent,
                 "child_name": inh_cn, "parent_name": inh_pn,
                 "child_path": inh_cp, "parent_path": inh_pp,
-            }), f"{pq_dir}/inheritance.parquet")
+            }, f"{pq_dir}/inheritance")
 
         if on_progress:
             on_progress(total * 2 // 3, total, "Loading into DuckDB...")
 
-        logger.info("  [timing] parquet_write: %.1fs", time.perf_counter() - _t_pq)
+        logger.info("  [timing] stage_write: %.1fs", time.perf_counter() - _t_pq)
 
         # ── DROP + COPY FROM ─────────────────────────────────────────
         _t_db = time.perf_counter()
@@ -472,28 +470,28 @@ class DuckDBGraphWriter:
                   [str(repo_path_obj), repo_path_obj.name])
 
         # Bulk load from Parquet
-        c.execute(f"INSERT INTO files SELECT * FROM read_parquet('{pq_dir}/files.parquet')")
+        _load(c, "files", f"{pq_dir}/files")
 
-        if os.path.exists(f"{pq_dir}/directories.parquet"):
-            c.execute(f"INSERT INTO directories SELECT * FROM read_parquet('{pq_dir}/directories.parquet')")
+        if _staged(f"{pq_dir}/directories"):
+            _load(c, "directories", f"{pq_dir}/directories")
 
-        c.execute(f"INSERT INTO functions SELECT * FROM read_parquet('{pq_dir}/functions.parquet')")
-        c.execute(f"INSERT INTO classes SELECT * FROM read_parquet('{pq_dir}/classes.parquet')")
-        c.execute(f"INSERT INTO variables SELECT * FROM read_parquet('{pq_dir}/variables.parquet')")
+        _load(c, "functions", f"{pq_dir}/functions")
+        _load(c, "classes", f"{pq_dir}/classes")
+        _load(c, "variables", f"{pq_dir}/variables")
 
-        if os.path.exists(f"{pq_dir}/parameters.parquet"):
-            c.execute(f"INSERT INTO parameters SELECT * FROM read_parquet('{pq_dir}/parameters.parquet')")
+        if _staged(f"{pq_dir}/parameters"):
+            _load(c, "parameters", f"{pq_dir}/parameters")
 
         # Modules (deduplicated)
         if mod_set:
             _insert_rows(c, "modules", [(m,) for m in mod_set])
 
-        c.execute(f"INSERT INTO imports SELECT * FROM read_parquet('{pq_dir}/imports.parquet')")
-        c.execute(f"INSERT INTO file_contains SELECT * FROM read_parquet('{pq_dir}/file_contains.parquet')")
-        c.execute(f"INSERT INTO calls SELECT * FROM read_parquet('{pq_dir}/calls.parquet')")
+        _load(c, "imports", f"{pq_dir}/imports")
+        _load(c, "file_contains", f"{pq_dir}/file_contains")
+        _load(c, "calls", f"{pq_dir}/calls")
 
-        if os.path.exists(f"{pq_dir}/inheritance.parquet"):
-            c.execute(f"INSERT INTO inheritance SELECT * FROM read_parquet('{pq_dir}/inheritance.parquet')")
+        if _staged(f"{pq_dir}/inheritance"):
+            _load(c, "inheritance", f"{pq_dir}/inheritance")
 
         if inj_rows:
             _insert_rows(c, "injections", _resolve_injection_targets(inj_rows, cl_name, cl_path),
@@ -508,20 +506,12 @@ class DuckDBGraphWriter:
                     return str(Path(p).relative_to(repo_path_obj)) if p else ""
                 except ValueError:
                     return p
-            # Bulk load via Arrow: executemany is ~1 row per call in DuckDB
-            # and tens of thousands of rows are normal here.
-            unresolved_tbl = pa.table({
-                "caller_name": [u.get("caller_name") or "" for u in unresolved],
-                "caller_path": [_rel_path(u.get("caller_file_path", "")) for u in unresolved],
-                "line_number": pa.array([u.get("line_number", 0) for u in unresolved], type=pa.int32()),
-                "called_name": [u.get("called_name", "") for u in unresolved],
-                "full_call_name": [(u.get("full_call_name") or "")[:300] for u in unresolved],
-                "receiver_type": [u.get("receiver_type") or "" for u in unresolved],
-                "reason": [u.get("reason", "") for u in unresolved],
-            })
-            c.register("_unresolved_tbl", unresolved_tbl)
-            c.execute("INSERT INTO unresolved_calls SELECT * FROM _unresolved_tbl")
-            c.unregister("_unresolved_tbl")
+            _insert_rows(c, "unresolved_calls", [
+                (u.get("caller_name") or "", _rel_path(u.get("caller_file_path", "")),
+                 u.get("line_number", 0), u.get("called_name", ""),
+                 (u.get("full_call_name") or "")[:300], u.get("receiver_type") or "", u.get("reason", ""))
+                for u in unresolved
+            ])
 
         # Indexes for query performance
         c.execute("CREATE INDEX IF NOT EXISTS idx_fn_name ON functions(name)")
@@ -663,7 +653,7 @@ class DuckDBGraphWriter:
         except Exception as exc:
             logger.debug("Inheritance post-process failed: %s", exc)
 
-        # Cleanup temp parquet
+        # Cleanup staged files
         import shutil
         shutil.rmtree(pq_dir, ignore_errors=True)
 
@@ -1043,22 +1033,84 @@ def _write_orm(c, orm_rows) -> None:
         _insert_rows(c, "db_access", list(dict.fromkeys(access)))
 
 
+# Bulk-load staging. pyarrow is optional:
+#   - installed (wiki-forge declares it; extra `fast`): Parquet + read_parquet
+#     / registered Arrow tables, the fastest path (C++ conversion);
+#   - not installed (core install, e.g. slim Docker images): quoted CSV +
+#     COPY into the declared column types. Identical table contents, ~3-4x
+#     slower staging (≈0.3 s on a 1.5k-file repo).
+# Every CSV field is quoted, NULL is a sentinel no real value uses, and COPY
+# doesn't sniff types, so values round-trip exactly ('' stays '', "007"
+# stays a string, newlines/quotes survive).
+try:
+    import pyarrow as _pa
+    import pyarrow.parquet as _pq
+except ImportError:  # core install without the `fast` extra
+    _pa = _pq = None
+
+_CSV_NULL = "__CGC_NULL__"
+
+
+def _write_csv(columns: Dict[str, list], path: str) -> None:
+    """Write column lists (in table column order) as a quoted CSV."""
+    import csv
+
+    cols = list(columns.values())
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh, quoting=csv.QUOTE_ALL, lineterminator="\n")
+        w.writerows([_CSV_NULL if v is None else v for v in row] for row in zip(*cols))
+
+
+def _copy_csv(c, table: str, path: str, columns: Optional[List[str]] = None) -> None:
+    target = f"{table} ({', '.join(columns)})" if columns else table
+    c.execute(
+        f"COPY {target} FROM '{path}' (FORMAT csv, HEADER false, DELIMITER ',', "
+        f"QUOTE '\"', ESCAPE '\"', NULLSTR '{_CSV_NULL}', AUTO_DETECT false)"
+    )
+
+
+def _stage(columns: Dict[str, list], base: str) -> None:
+    """Stage one table (column lists in table order) at `base` (+ extension)."""
+    if _pa is not None:
+        _pq.write_table(_pa.table(columns), base + ".parquet")
+    else:
+        _write_csv(columns, base + ".csv")
+
+
+def _staged(base: str) -> bool:
+    return os.path.exists(base + ".parquet") or os.path.exists(base + ".csv")
+
+
+def _load(c, table: str, base: str) -> None:
+    """Bulk-load a table staged by _stage()."""
+    if os.path.exists(base + ".parquet"):
+        c.execute(f"INSERT INTO {table} SELECT * FROM read_parquet('{base}.parquet')")
+    else:
+        _copy_csv(c, table, base + ".csv")
+
+
 def _insert_rows(c, table: str, rows) -> None:
-    """Bulk-insert row tuples (in table column order) via an Arrow table.
+    """Bulk-insert row tuples (in table column order) via a staged CSV + COPY.
 
     DuckDB's executemany runs one INSERT per row (~0.5 ms each, worse with a
-    large Python heap); a registered Arrow table is a single columnar insert.
+    large Python heap); COPY is a single columnar load.
     """
-    import pyarrow as pa
-
     rows = list(rows)
     if not rows:
         return
-    cols = [r[1] for r in c.execute(f"PRAGMA table_info('{table}')").fetchall()]
-    data = {name: [row[i] for row in rows] for i, name in enumerate(cols[: len(rows[0])])}
-    tbl = pa.table(data)
-    c.register("_bulk_rows", tbl)
+    cols = [r[1] for r in c.execute(f"PRAGMA table_info('{table}')").fetchall()][: len(rows[0])]
+    if _pa is not None:
+        tbl = _pa.table({name: [row[i] for row in rows] for i, name in enumerate(cols)})
+        c.register("_bulk_rows", tbl)
+        try:
+            c.execute(f"INSERT INTO {table} ({', '.join(cols)}) SELECT * FROM _bulk_rows")
+        finally:
+            c.unregister("_bulk_rows")
+        return
+    fd, path = tempfile.mkstemp(prefix=f"cgc_{table}_", suffix=".csv")
+    os.close(fd)
     try:
-        c.execute(f"INSERT INTO {table} ({', '.join(tbl.column_names)}) SELECT * FROM _bulk_rows")
+        _write_csv({name: [row[i] for row in rows] for i, name in enumerate(cols)}, path)
+        _copy_csv(c, table, path, cols)
     finally:
-        c.unregister("_bulk_rows")
+        os.remove(path)

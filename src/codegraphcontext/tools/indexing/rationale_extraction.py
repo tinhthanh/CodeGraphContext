@@ -72,14 +72,22 @@ def extract_rationales(
             rel_path = Path(file_path).name
 
         # Build line → function context map
+        # Functions are applied outermost-first (by start line, then longest
+        # span first), so a nested function overrides its enclosing one and
+        # the result doesn't depend on the order the parser listed them in.
+        # The parser reports `end_line` (not `body_end_line`); without it every
+        # function spanned 50 lines and overlapping ranges were won by
+        # whichever came last.
         func_context: Dict[int, str] = {}
+        spans = []
         for fn in file_data.get("functions", []):
             start = fn.get("line_number", 0)
-            end = fn.get("body_end_line", start + 50) or start + 50
+            end = fn.get("end_line") or fn.get("body_end_line") or start + 50
             name = fn.get("name", "")
             ctx = fn.get("class_context", "")
-            full_name = f"{ctx}.{name}" if ctx else name
-            for line in range(start, end + 1):
+            spans.append((start, -end, f"{ctx}.{name}" if ctx else name))
+        for start, neg_end, full_name in sorted(spans):
+            for line in range(start, -neg_end + 1):
                 func_context[line] = full_name
 
         # Scan source for rationale comments
