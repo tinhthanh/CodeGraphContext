@@ -31,13 +31,14 @@ classifiers = [
 # server, Neo4j/FalkorDB/Kuzu backends, watchers) is in the `full` extra.
 dependencies = [
     "duckdb>=1.0",
-    "pyarrow>=14.0",
     "pathspec>=0.12.1",
     "rich>=13.7.0",
     "pyyaml",
 ]
 
 [project.optional-dependencies]
+# Faster bulk loads (Parquet/Arrow staging instead of CSV). Output is identical.
+fast = ["pyarrow>=14.0"]
 # Original CodeGraphContext features: `cgc` CLI, MCP server, graph-DB backends.
 #   pip install "codegraphcontext-rust[full]"
 full = [
@@ -58,6 +59,8 @@ full = [
     "kuzu>=0.4.0; sys_platform == 'win32' or (sys_platform != 'win32' and python_version >= '3.10' and python_version < '3.12')",
     "fastapi>=0.100.0",
     "uvicorn>=0.22.0",
+    # Parquet bulk loader of the Kuzu backend (tools/indexing/persistence/parquet_loader.py)
+    "pyarrow>=14.0",
 ]
 parsing = [
     "tree-sitter>=0.21.0",
