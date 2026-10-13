@@ -46,7 +46,10 @@ def discover_files(repo_path: str) -> list:
             rel = f.relative_to(root).as_posix()
             if not _IGNORE_SPEC.match_file(rel):
                 files.append((str(f), lang))
-    return files
+    # rglob order depends on the OS and the Python version (3.14 changed the
+    # directory walk), and the resolver breaks ties by input order — sort so
+    # the same repo gives the same graph everywhere.
+    return sorted(files)
 
 
 def cmd_index(args):
