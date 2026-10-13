@@ -9,4 +9,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 cgc-core = { path = "../cgc-core" }
-pyo3 = { version = "0.24", features = ["extension-module"] }
+pyo3 = { version = "0.25", features = ["extension-module"] }

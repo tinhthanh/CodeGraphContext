@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "codegraphcontext-rust"
-version = "0.9.23"
+version = "0.9.24"
 description = "Rust-accelerated code indexing engine for CodeGraphContext. 19 languages, 5-18x faster parsing via tree-sitter + rayon."
 authors = [
     { name = "Shashank Shekhar Singh", email = "shashankshekharsingh1205@gmail.com" },
@@ -19,6 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Rust",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
